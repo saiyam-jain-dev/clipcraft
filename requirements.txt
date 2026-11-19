@@ -1,0 +1,8 @@
+flask
+requests
+numpy
+opencv-python
+imageio-ffmpeg
+yt-dlp
+faster-whisper
+ctranslate2

@@ -1,0 +1,222 @@
+"""Link sources without downloading the whole video: YouTube captions give the transcript, audio-only
+download is the fallback when there are none, and only the chosen clips are downloaded for rendering."""
+import os
+import re
+import glob
+import shutil
+import subprocess
+import numpy as np
+import requests
+import yt_dlp
+from yt_dlp.utils import download_range_func
+from .config import DOWNLOADS_DIR, FFMPEG_EXE
+from .downloader import _ydl_opts, _friendly_error
+
+# H.264 first (OpenCV face tracking can't reliably decode AV1 on Windows); 30 fps is plenty for Shorts.
+VIDEO_FORMAT = ("bv*[height<=1080][fps<=30][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][fps<=30]+ba/"
+                "bv*[height<=1080]+ba/b[height<=1080]/b")
+
+
+def fetch_info(source: str, **extra) -> dict:
+    try:
+        with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, **extra)) as ydl:
+            info = ydl.extract_info(source, download=False)
+    except Exception as e:
+        raise RuntimeError(_friendly_error(e)) from e
+    if info.get("is_live"):
+        raise RuntimeError("Live streams cannot be clipped until the recording has finished.")
+    if info.get("_type") == "playlist":
+        raise RuntimeError("Paste a single video link, not a playlist.")
+    return info
+
+
+def check_space(needed_bytes: float):
+    free = shutil.disk_usage(DOWNLOADS_DIR).free
+    if free < needed_bytes + 2 * 1024 ** 3:
+        raise RuntimeError(f"Not enough disk space: this needs about {needed_bytes / 1024 ** 3:.1f} GB "
+                           f"and only {free / 1024 ** 3:.1f} GB is free (2 GB is kept spare).")
+
+
+def _progress_hook(progress_callback, label):
+    def hook(d):
+        if d.get("status") != "downloading" or not progress_callback:
+            return
+        total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+        pct = d.get("downloaded_bytes", 0) / total * 100 if total else 0
+        size = f" of {total / 1048576:.0f} MB" if total else ""
+        speed = f" at {d['speed'] / 1048576:.1f} MB/s" if d.get("speed") else ""
+        eta = f", {int(d['eta']) // 60}:{int(d['eta']) % 60:02d} left" if d.get("eta") is not None else ""
+        progress_callback(pct, f"{label} {pct:.0f}%{size}{speed}{eta}")
+    return hook
+
+
+# ----------------------------------------------------------------------------- captions
+def _caption_track(info: dict):
+    """(url, language, kind). Auto '-orig' captions have per-word timing; uploaded ones are line-timed."""
+    lang = (info.get("language") or "").split("-")[0]
+    manual = info.get("subtitles") or {}
+    auto = info.get("automatic_captions") or {}
+
+    def json3(tracks):
+        return next((t["url"] for t in tracks or [] if t.get("ext") == "json3"), None)
+
+    candidates = []
+    if lang:
+        candidates += [(auto, f"{lang}-orig", "auto"), (manual, lang, "uploaded")]
+    candidates += [(auto, k, "auto") for k in auto if k.endswith("-orig")]
+    candidates += [(manual, k, "uploaded") for k in manual if k != "live_chat"]
+    for tracks, key, kind in candidates:
+        url = json3(tracks.get(key))
+        if url:
+            return url, key.replace("-orig", ""), kind
+    return None
+
+
+def _json3_words(data: dict) -> list:
+    words = []
+    for ev in data.get("events", []):
+        segs = [s for s in ev.get("segs") or [] if s.get("utf8", "").strip()]
+        if not segs:
+            continue
+        t0 = ev.get("tStartMs", 0) / 1000
+        t1 = (ev.get("tStartMs", 0) + ev.get("dDurationMs", 0)) / 1000
+        if len(segs) > 1 and all("tOffsetMs" in s for s in segs[1:]):
+            spans = [(t0 + s.get("tOffsetMs", 0) / 1000, s["utf8"]) for s in segs]
+        else:
+            spans = [(t0, " ".join(s["utf8"] for s in segs))]
+        for k, (start, text) in enumerate(spans):
+            end = spans[k + 1][0] if k + 1 < len(spans) else t1
+            tokens = [t for t in text.split() if not re.fullmatch(r"\[[^\]]*\]", t)]
+            step = max(0.05, (end - start) / max(1, len(tokens)))
+            for n, tok in enumerate(tokens):
+                words.append({"word": tok, "start": round(start + n * step, 2),
+                              "end": round(start + (n + 1) * step, 2)})
+    words.sort(key=lambda w: w["start"])
+    for a, b in zip(words, words[1:]):
+        a["end"] = round(min(a["end"], b["start"], a["start"] + 1.5), 2)
+    if words:
+        words[-1]["end"] = round(min(words[-1]["end"], words[-1]["start"] + 1.5), 2)
+    return [w for w in words if w["end"] > w["start"]]
+
+
+def caption_transcript(info: dict, start: float, end: float):
+    track = _caption_track(info)
+    if not track:
+        return None
+    url, lang, kind = track
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
+    words = [w for w in _json3_words(r.json()) if w["start"] >= start and (not end or w["end"] <= end)]
+    if len(words) < 20:
+        return None
+    return {"language": lang, "words": words, "kind": kind}
+
+
+# ----------------------------------------------------------------------------- audio fallback
+def download_audio(info: dict, source: str, start: float, end: float, progress_callback=None) -> str:
+    vid = re.sub(r"[^A-Za-z0-9_-]", "", info.get("id") or "video")
+    duration = info.get("duration") or 0
+    ranged = start > 0 or bool(end and end < duration)
+    base = os.path.join(DOWNLOADS_DIR, f"aud_{vid}" + (f"_{int(start)}-{int(end)}" if ranged else ""))
+    cached = [p for p in glob.glob(base + ".*") if not p.endswith((".part", ".wav", ".ytdl"))]
+    if cached:
+        return cached[0]
+    audio = [f for f in info.get("formats") or []
+             if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none")]
+    best = max(audio, key=lambda f: f.get("abr") or 0, default={})
+    size = best.get("filesize") or best.get("filesize_approx") or (best.get("abr") or 160) * 125 * duration
+    check_space(size * ((end - start) / duration if duration else 1))
+    opts = _ydl_opts(format="ba[ext=m4a]/ba/b", outtmpl=base + ".%(ext)s",
+                     progress_hooks=[_progress_hook(progress_callback, "Downloading audio only...")])
+    if ranged:
+        opts["download_ranges"] = download_range_func(None, [(start, end)])
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            res = ydl.extract_info(source, download=True)
+    except Exception as e:
+        raise RuntimeError(_friendly_error(e)) from e
+    return res["requested_downloads"][0]["filepath"]
+
+
+def loudness_profile(audio_path: str, offset: float = 0.0, hop: float = 0.5, sr: int = 8000) -> dict:
+    """Same shape as virality_engine.audio_energy_profile, streamed so hours of audio never become a WAV."""
+    proc = subprocess.Popen([FFMPEG_EXE, "-v", "error", "-i", audio_path, "-vn", "-ac", "1", "-ar", str(sr),
+                             "-f", "s16le", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    hop_n, db, rest = int(sr * hop), [], np.zeros(0, dtype=np.float32)
+    while True:
+        raw = proc.stdout.read(hop_n * 2 * 600)
+        if not raw:
+            break
+        x = np.frombuffer(raw[: len(raw) // 2 * 2], dtype=np.int16).astype(np.float32) / 32768.0
+        x = np.concatenate([rest, x])
+        n = len(x) // hop_n
+        if n:
+            frames = x[: n * hop_n].reshape(n, hop_n)
+            db.extend(20 * np.log10(np.sqrt((frames ** 2).mean(axis=1)) + 1e-6))
+        rest = x[n * hop_n:]
+    proc.wait()
+    db = np.array(db, dtype=np.float32)
+    voiced = db[db > -50]
+    mu, sd = (voiced.mean(), voiced.std() + 1e-6) if len(voiced) > 10 else (db.mean(), db.std() + 1e-6)
+    return {"offset": offset, "hop": hop, "z": (db - mu) / sd, "audible": bool(len(voiced))}
+
+
+def loud_windows(profile: dict, count: int, length: float) -> list:
+    """The `count` non-overlapping windows of `length` seconds with the highest mean loudness."""
+    z, hop, offset = profile["z"], profile["hop"], profile["offset"]
+    n = max(1, int(length / hop))
+    if len(z) <= n:
+        return [(offset, offset + len(z) * hop)]
+    score = np.convolve(z, np.ones(n) / n, mode="valid")
+    picks = []
+    for i in np.argsort(score)[::-1]:
+        if all(abs(int(i) - j) >= n for j in picks):
+            picks.append(int(i))
+            if len(picks) >= count:
+                break
+    return sorted((round(offset + i * hop, 2), round(offset + (i + n) * hop, 2)) for i in picks)
+
+
+# ----------------------------------------------------------------------------- per-clip video
+def download_section(source: str, start: float, end: float, out_path: str, info: dict = None) -> str:
+    """Frame-accurate cut of [start, end] straight from the stream URLs (HTTP range seeks, no full download)."""
+    if info is None:
+        info = fetch_info(source, format=VIDEO_FORMAT)
+    fmts = info.get("requested_formats") or [info]
+    cmd = [FFMPEG_EXE, "-y", "-v", "error"]
+    for f in fmts:
+        headers = f.get("http_headers") or info.get("http_headers") or {}
+        if headers:
+            cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+        cmd += ["-ss", f"{start:.3f}", "-i", f["url"]]
+    cmd += ["-t", f"{end - start:.3f}", "-map", "0:v:0", "-map", f"{len(fmts) - 1}:a:0?",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]
+    # Intermediate file: it is decoded again by the renderer, so NVENC is fine and much faster.
+    # If the GPU is busy (parallel clips share the NVENC session limit) fall back to x264.
+    last_err = ""
+    for video_args in (["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "20", "-b:v", "0"],
+                       ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]):
+        r = subprocess.run(cmd + video_args + [out_path], capture_output=True, text=True, timeout=900)
+        if r.returncode == 0 and os.path.exists(out_path):
+            return out_path
+        last_err = r.stderr
+        if "nvenc" not in last_err.lower():
+            break
+    raise RuntimeError(f"Could not download this part of the video: {last_err.strip()[-300:]}")
+
+
+def preview_frame(info: dict, t: float, out_path: str) -> str:
+    """One frame at time `t` pulled straight from the stream (HTTP range seek) — no clip download."""
+    fmts = info.get("requested_formats") or [info]
+    vfmt = next((f for f in fmts if f.get("vcodec") not in (None, "none")), fmts[0])
+    cmd = [FFMPEG_EXE, "-y", "-v", "error", "-ss", f"{max(0.0, t):.3f}"]
+    headers = vfmt.get("http_headers") or info.get("http_headers") or {}
+    if headers:
+        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+    cmd += ["-i", vfmt["url"], "-frames:v", "1",
+            "-vf", "scale=360:640:force_original_aspect_ratio=increase,crop=360:640",
+            "-q:v", "3", out_path]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+    if r.returncode != 0 or not os.path.exists(out_path):
+        raise RuntimeError(f"Could not grab a preview frame: {r.stderr.strip()[-200:]}")
+    return out_path

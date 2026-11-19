@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local settings & secrets — never commit real API keys
+settings.json
+.env
+.env.*
+!.env.example
+
+# Runtime data
+downloads/
+uploads/
+outputs/
+jobs/
+bin/
+*.log
+*.tmp
+
+# Local agent notes
+AGENT_HANDOFF.txt
