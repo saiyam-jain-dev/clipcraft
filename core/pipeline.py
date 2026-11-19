@@ -322,7 +322,7 @@ def render_all_pending(job_id: str):
                            options, callback, src_info)
 
         errors = []
-        with ThreadPoolExecutor(max_workers=min(3, total)) as pool:
+        with ThreadPoolExecutor(max_workers=min(6, total)) as pool:
             futures = {pool.submit(work, clip): clip for clip in pending}
             for fut in as_completed(futures):
                 clip = futures[fut]
@@ -409,8 +409,9 @@ def run_clipcraft_pipeline(job_id: str, source: str, options: dict):
             data["preview"] = True
             append_clip(job_id, data)
         update_job(job_id, status="completed", stage="completed", progress_pct=100,
-                   status_message=f"{total} moments found. Render the clips you want, then download them.",
+                   status_message=f"{total} moments found. Rendering all clips to video...",
                    completed_at=time.time())
+        enqueue(job_id, render_all_pending)
     except Exception as e:
         traceback.print_exc()
         update_job(job_id, status="failed", error=str(e), status_message=str(e), completed_at=time.time())

@@ -302,6 +302,10 @@ def handle_settings():
         if any(not isinstance(v, str) or len(v) > 4096 for v in data.values()):
             return _error("Invalid settings values.")
         data.pop("fallback_providers", None)  # holds API keys; edited in settings.json only
+        data.pop("proxy_host", None)  # proxy config; edited in settings.json only
+        data.pop("proxy_port", None)
+        data.pop("proxy_user", None)
+        data.pop("proxy_pass", None)
         merged = {**load_settings(), **data}
         if merged["llm_provider"] not in ("none", "gemini", "openai_compatible"):
             return _error("Invalid AI provider.")

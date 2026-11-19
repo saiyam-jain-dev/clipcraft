@@ -42,8 +42,13 @@ DEFAULT_SETTINGS = {
     "whisper_model": "small",
     # e.g. "chrome", "edge", "firefox" when YouTube asks to "confirm you're not a bot"
     "cookies_from_browser": "",
+    # Oxylabs residential proxy for keyless engines (optional)
+    "proxy_host": "",
+    "proxy_port": "",
+    "proxy_user": "",
+    "proxy_pass": "",
 }
-SECRET_KEYS = ("gemini_api_key", "openai_api_key")
+SECRET_KEYS = ("gemini_api_key", "openai_api_key", "proxy_pass")
 
 _settings_lock = threading.RLock()
 
@@ -85,4 +90,5 @@ def public_settings() -> dict:
         s[k + "_set"] = bool(s[k])
         s[k] = ""
     s["fallback_providers"] = ""  # holds API keys; never sent to the browser
+    s["proxy_pass"] = ""  # never send to the browser
     return s

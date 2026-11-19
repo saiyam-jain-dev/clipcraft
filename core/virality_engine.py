@@ -3,7 +3,7 @@ import re
 import math
 import wave
 import numpy as np
-from .llm import complete_json, llm_configured, max_prompt_chars, LLMError
+from .llm import complete_json, complete_json_parallel, llm_configured, max_prompt_chars, LLMError
 
 STRONG = re.compile(
     r"\b(secret|never|always|mistake|truth|why|how to|stop|nobody|everyone|most people|actually|shocking|insane|"
@@ -447,27 +447,30 @@ def _llm_clips(sents, words, energy, min_dur, max_dur, target, prompt, settings,
 
     prompt_rule = (f"- The user specifically wants: \"{prompt.strip()}\". Only pick moments matching this request.\n"
                    if prompt and prompt.strip() else "")
-    def ask(item):
-        ci, chunk = item
-        n = min(20, max(3, math.ceil(target * 1.6 / len(chunks)) + 1))
-        part = f"part {ci + 1}/{len(chunks)}"
-        if len(chunks) > 1:
-            log(f"Asking AI for the best moments ({part})...")
-        try:
-            data = complete_json(PROMPT.format(n=n, min_dur=min_dur, max_dur=max_dur, prompt_rule=prompt_rule,
-                                               transcript="\n".join(chunk)), SYSTEM, settings, log=log)
-            entries = data.get("clips") if isinstance(data, dict) else data
-            if not isinstance(entries, list):
-                raise LLMError("AI returned an invalid clips list.")
-        except LLMError:
-            if len(chunks) == 1:
-                raise
-            log(f"Skipped {part} of the transcript: no AI engine answered for it", "warn")
-            return []
-        return entries
 
-    with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as pool:
-        raw = [e for entries in pool.map(ask, enumerate(chunks)) for e in entries]
+    prompts = []
+    for ci, chunk in enumerate(chunks):
+        n = min(20, max(3, math.ceil(target * 1.6 / len(chunks)) + 1))
+        prompts.append(PROMPT.format(n=n, min_dur=min_dur, max_dur=max_dur, prompt_rule=prompt_rule,
+                                      transcript="\n".join(chunk)))
+
+    if len(chunks) == 1:
+        log(f"Asking AI for the best moments...")
+        data = complete_json(prompts[0], SYSTEM, settings, log=log)
+        raw = data.get("clips") if isinstance(data, dict) else data
+        if not isinstance(raw, list):
+            raise LLMError("AI returned an invalid clips list.")
+    else:
+        log(f"Asking AI for the best moments ({len(chunks)} chunks, {len(prompts)} prompts)...")
+        results = complete_json_parallel(prompts, SYSTEM, settings, log=log)
+        raw = []
+        for ci, data in enumerate(results):
+            if data is None:
+                log(f"Skipped chunk {ci + 1}/{len(chunks)}: no AI engine answered for it", "warn")
+                continue
+            entries = data.get("clips") if isinstance(data, dict) else data
+            if isinstance(entries, list):
+                raw.extend(entries)
     if not raw:
         raise LLMError("No AI engine returned any moments.")
 
