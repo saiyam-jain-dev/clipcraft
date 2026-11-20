@@ -538,8 +538,9 @@ def test_remote_worker_endpoint():
 
 @app.get("/api/cli-test")
 def cli_test_endpoint():
-    url = request.args.get("url", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-    cmd = ["yt-dlp", "--cookies", "/tmp/youtube_cookies.txt", "-F", "--verbose", url]
+    url = request.args.get("url", "https://www.youtube.com/live/VZqAPdUvqnQ")
+    client = request.args.get("client", "web_embedded,web,mweb")
+    cmd = ["yt-dlp", "--cookies", "/tmp/youtube_cookies.txt", "--extractor-args", f"youtube:player_client={client}", "-F", "--verbose", url]
     import subprocess
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     return jsonify({
@@ -554,16 +555,32 @@ def cli_test_endpoint():
 def test_formats_endpoint():
     url = request.args.get("url", "https://www.youtube.com/live/VZqAPdUvqnQ")
     use_cookies = request.args.get("cookies", "1") == "1"
+    anon_only = request.args.get("anon", "0") == "1"
     client_param = request.args.get("client")
     
     from core.remote_source import _resolve_stream_formats
     from core.downloader import _ydl_opts
     import yt_dlp
+    import http.cookiejar
 
     opts = _ydl_opts(skip_download=True)
     if not use_cookies:
         opts.pop("cookiefile", None)
         opts.pop("cookiesfrombrowser", None)
+    elif anon_only and opts.get("cookiefile") and os.path.exists(opts["cookiefile"]):
+        try:
+            cj = http.cookiejar.MozillaCookieJar(opts["cookiefile"])
+            cj.load(ignore_discard=True, ignore_expires=True)
+            anon_cj = http.cookiejar.MozillaCookieJar("/tmp/anon_cookies.txt")
+            anon_names = {"VISITOR_INFO1_LIVE", "VISITOR_PRIVACY_METADATA", "YSC", "PREF", "GPS"}
+            for c in cj:
+                if c.name in anon_names:
+                    anon_cj.set_cookie(c)
+            anon_cj.save(ignore_discard=True, ignore_expires=True)
+            opts["cookiefile"] = "/tmp/anon_cookies.txt"
+        except Exception:
+            pass
+
     if client_param:
         clients = [c.strip() for c in client_param.split(",")]
         opts["extractor_args"] = {"youtube": {"player_client": clients}}
