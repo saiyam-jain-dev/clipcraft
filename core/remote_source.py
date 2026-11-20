@@ -198,6 +198,34 @@ def loud_windows(profile: dict, count: int, length: float) -> list:
     return sorted((round(offset + i * hop, 2), round(offset + (i + n) * hop, 2)) for i in picks)
 
 
+def _resolve_stream_formats(info: dict) -> list:
+    """Safely extracts valid stream URLs whether info came from process=True or process=False."""
+    fmts = info.get("requested_formats")
+    if fmts and all(isinstance(f, dict) and f.get("url") for f in fmts):
+        return fmts
+    formats = info.get("formats") or []
+    # 1. Combined audio+video format (e.g. 1080p m3u8 format 301 or progressive 720p format 18/22)
+    combined = [f for f in formats if f.get("url") and f.get("vcodec") not in (None, "none") and f.get("acodec") not in (None, "none")]
+    if combined:
+        return [max(combined, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))]
+    # 2. Separate video and audio streams
+    vfmts = [f for f in formats if f.get("url") and f.get("vcodec") not in (None, "none")]
+    afmts = [f for f in formats if f.get("url") and f.get("acodec") not in (None, "none")]
+    if vfmts and afmts:
+        best_v = max(vfmts, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))
+        best_a = max(afmts, key=lambda f: (f.get("abr") or 0, f.get("tbr") or 0))
+        return [best_v, best_a]
+    if vfmts:
+        return [max(vfmts, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))]
+    if formats:
+        with_url = [f for f in formats if f.get("url")]
+        if with_url:
+            return [with_url[-1]]
+    if "url" in info:
+        return [info]
+    raise RuntimeError("Could not find playable stream format URLs for this video.")
+
+
 # ----------------------------------------------------------------------------- per-clip video
 def download_section(source: str, start: float, end: float, out_path: str, info: dict = None, gpu_id: int = None) -> str:
     """Frame-accurate cut of [start, end] straight from the stream URLs (HTTP range seeks, no full download)."""
@@ -206,7 +234,7 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
             info = fetch_info(source, format=VIDEO_FORMAT)
         except Exception:
             info = fetch_info(source, format="best/b")
-    fmts = info.get("requested_formats") or [info]
+    fmts = _resolve_stream_formats(info)
     cmd = [FFMPEG_EXE, "-y", "-v", "error"]
     for f in fmts:
         headers = f.get("http_headers") or info.get("http_headers") or {}
@@ -260,7 +288,7 @@ def download_lowres_section(source: str, start: float, end: float, out_path: str
 
 def preview_frame(info: dict, t: float, out_path: str) -> str:
     """One frame at time `t` pulled straight from the stream (HTTP range seek) — no clip download."""
-    fmts = info.get("requested_formats") or [info]
+    fmts = _resolve_stream_formats(info)
     vfmt = next((f for f in fmts if f.get("vcodec") not in (None, "none")), fmts[0])
     cmd = [FFMPEG_EXE, "-y", "-v", "error", "-ss", f"{max(0.0, t):.3f}"]
     headers = vfmt.get("http_headers") or info.get("http_headers") or {}
