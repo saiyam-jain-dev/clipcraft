@@ -231,9 +231,9 @@ def _extract_with_fallback(opts: dict, url: str, download: bool = False):
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=download)
             fmts = (info.get("formats") or []) if info else []
-            # If only storyboard images were returned, account is enrolled in YouTube SABR experiment
-            if fmts and not any(f.get("vcodec") not in (None, "none") and f.get("url") for f in fmts):
-                raise RuntimeError("SABR experiment active for account: only storyboard formats returned")
+            # If no playable video formats were returned (e.g. SABR experiment or suppressed error), trigger fallback
+            if not any(f.get("vcodec") not in (None, "none") and f.get("url") for f in fmts):
+                raise RuntimeError("No playable video formats returned for current options")
             return info
     except Exception as e:
         msg = str(e)

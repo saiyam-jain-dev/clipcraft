@@ -553,6 +553,10 @@ def cli_test_endpoint():
     cookie_mode = request.args.get("cookies", "account")
     from core.downloader import ANON_COOKIES_PATH, ensure_netscape_cookies
     cmd = ["yt-dlp", "-F", "--verbose"]
+    import shutil
+    node_bin = shutil.which("node") or "/usr/bin/node"
+    if os.path.exists(node_bin):
+        cmd += ["--js-runtimes", f"node:{node_bin}"]
     if cookie_mode == "anon" and os.path.exists(ANON_COOKIES_PATH):
         cmd += ["--cookies", ANON_COOKIES_PATH]
     elif cookie_mode == "account" and os.path.exists("/tmp/youtube_cookies.txt"):
