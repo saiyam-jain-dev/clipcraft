@@ -1,14 +1,10 @@
 import type { Job, VideoInfo, Settings, SocialPackage, JobOptions } from '@/types';
 
-// In browser: use NEXT_PUBLIC_API_URL env var (set at build time) or same-origin (for Netlify redirects)
-// On server: use NEXT_PUBLIC_API_URL or localhost default
-const API_BASE = (() => {
-  const envUrl = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:5004';
-  if (typeof window === 'undefined') return envUrl; // Server-side
-  // Client-side: use the env var directly (Netlify injects it at build time)
-  // If not set, fallback to same-origin (works with Netlify redirects)
-  return envUrl || '';
-})();
+// Server-side: use full backend URL for direct calls
+// Client-side: use relative paths so Vercel rewrites work
+const API_BASE = typeof window === 'undefined'
+  ? (process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:5004')
+  : '';
 
 class ApiError extends Error {
   constructor(message: string, public status?: number) {
