@@ -4,6 +4,9 @@
 
 FROM python:3.11-slim AS base
 
+# Install Deno binary (official multi-arch) for yt-dlp native JavaScript challenge solver
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+
 # System deps: FFmpeg, OpenCV, yt-dlp, whisper.cpp deps, Node.js (for yt-dlp JS deciphering)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \

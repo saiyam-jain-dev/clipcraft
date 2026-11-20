@@ -8,7 +8,7 @@ import json
 import http.cookiejar
 import cv2
 import yt_dlp
-from .config import DOWNLOADS_DIR, FFMPEG_EXE, NODE_EXE, load_settings
+from .config import DOWNLOADS_DIR, FFMPEG_EXE, NODE_EXE, DENO_EXE, load_settings
 
 ANON_COOKIES_PATH = "/tmp/youtube_cookies_anon.txt" if os.path.exists("/tmp") else os.path.join(tempfile.gettempdir(), "youtube_cookies_anon.txt")
 
@@ -153,10 +153,12 @@ def _ydl_opts(**extra) -> dict:
         "ignore_no_formats_error": True,
         "ffmpeg_location": ffmpeg_dir(),
     }
-    if NODE_EXE and os.path.exists(NODE_EXE):
+    if DENO_EXE and os.path.exists(DENO_EXE):
+        opts["js_runtimes"] = {"deno": {"path": DENO_EXE}}
+    elif NODE_EXE and os.path.exists(NODE_EXE):
         opts["js_runtimes"] = {"node": {"path": NODE_EXE}}
     else:
-        opts["js_runtimes"] = {"node": {}}
+        opts["js_runtimes"] = {"deno": {}, "node": {}}
 
     # Cookies support: Netscape cookies file (servers/Docker) or browser cookies (desktop)
     b64_cookies = os.getenv("YTDLP_COOKIES_B64")
