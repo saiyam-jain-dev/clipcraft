@@ -19,20 +19,14 @@ VIDEO_FORMAT = ("bv*[height<=1080][fps<=30][vcodec^=avc1]+ba[ext=m4a]/bv*[height
 
 
 def fetch_info(source: str, **extra) -> dict:
+    extra.pop("format", None)  # Never restrict metadata extraction so all stream formats are resolved
     process = extra.pop("process", None)
     if process is None:
         try:
             with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, **extra)) as ydl:
                 info = ydl.extract_info(source, download=False)
         except Exception as e:
-            msg = str(e)
-            if "Requested format is not available" in msg or "No video formats found" in msg:
-                fallback_extra = dict(extra)
-                fallback_extra.pop("format", None)
-                with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, **fallback_extra)) as ydl:
-                    info = ydl.extract_info(source, download=False, process=False)
-            else:
-                raise RuntimeError(_friendly_error(e)) from e
+            raise RuntimeError(_friendly_error(e)) from e
     else:
         try:
             with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, **extra)) as ydl:
