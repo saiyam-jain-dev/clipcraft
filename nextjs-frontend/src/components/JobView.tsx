@@ -3,8 +3,9 @@
 import { useState, useEffect, useRef } from 'react';
 import Icon from './Icon';
 import SocialModal from './SocialModal';
+import PreviewModal from './PreviewModal';
 import { apiClient } from '@/lib/api';
-import { text, number, time, date, safeUrl, statusNames, stages, stageTitles, activeStatuses } from '@/lib/utils';
+import { text, number, time, date, safeUrl, statusNames, stages, stageTitles, activeStatuses, getYouTubeVideoId, getYouTubeTimestampUrl } from '@/lib/utils';
 import type { Job, Clip, CropMode, CaptionStyle, JobStage } from '@/types';
 
 interface JobViewProps {
@@ -20,6 +21,8 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
   const [clipSort, setClipSort] = useState<'score' | 'time'>('score');
   const [editingClip, setEditingClip] = useState<string | null>(null);
   const [socialModalClip, setSocialModalClip] = useState<Clip | null>(null);
+  const [previewModalClip, setPreviewModalClip] = useState<Clip | null>(null);
+  const [inlinePreviewClipId, setInlinePreviewClipId] = useState<string | null>(null);
   const [renderingClips, setRenderingClips] = useState<Record<string, boolean>>({});
   const [compiling, setCompiling] = useState(false);
   const [compilationUrl, setCompilationUrl] = useState<string | null>(null);
@@ -499,220 +502,306 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
       )}
 
       {/* Clips Grid */}
-      <div className="clips-grid">
-        {sortedClips.map((clip) => {
-          const virality = Math.round(clip.virality_score ?? clip.score ?? 50);
-          const scoreClass = getScoreColorClass(virality);
-          const duration = clip.duration || (clip.end_time - clip.start_time);
-          const isPending = !clip.video_file;
-          const isRendering = Boolean(renderingClips[clip.clip_id]);
-          const posterUrl = safeUrl(clip.thumb_url || '');
-          const videoUrl = clip.video_file ? `/video/${encodeURIComponent(clip.video_file)}` : '';
-          const subtitleUrl = clip.subtitle_url || (clip.video_file ? `/download/${clip.video_file.replace('.mp4', '.srt')}` : '');
+      {(() => {
+        const jobYtVideoId =
+          getYouTubeVideoId(job?.source || job?.source_label || '') ||
+          getYouTubeVideoId(job?.video_thumbnail || '');
 
-          return (
-            <article key={clip.clip_id} className={`clip-card ${scoreClass}`}>
-              {/* 9:16 Vertical Video Container */}
-              <div className="clip-video-wrap">
-                {clip.video_file ? (
-                  <video
-                    className="clip-video"
-                    controls
-                    playsInline
-                    preload="metadata"
-                    poster={posterUrl}
-                    src={videoUrl}
-                    aria-label={`Preview of ${clip.title}`}
-                  />
-                ) : (
-                  <>
-                    {posterUrl ? (
-                      <img className="clip-preview" src={posterUrl} alt="" />
+        return (
+          <div className="clips-grid">
+            {sortedClips.map((clip) => {
+              const virality = Math.round(clip.virality_score ?? clip.score ?? 50);
+              const scoreClass = getScoreColorClass(virality);
+              const duration = clip.duration || (clip.end_time - clip.start_time);
+              const isPending = !clip.video_file;
+              const isRendering = Boolean(renderingClips[clip.clip_id]);
+              const posterUrl = safeUrl(clip.thumb_url || '');
+              const videoUrl = clip.video_file ? `/video/${encodeURIComponent(clip.video_file)}` : '';
+              const subtitleUrl = clip.subtitle_url || (clip.video_file ? `/download/${clip.video_file.replace('.mp4', '.srt')}` : '');
+              const clipYtVideoId = jobYtVideoId || (clip.thumb_url ? getYouTubeVideoId(clip.thumb_url) : null);
+              const isInlinePlaying = inlinePreviewClipId === clip.clip_id;
+
+              return (
+                <article key={clip.clip_id} className={`clip-card ${scoreClass}`}>
+                  {/* 9:16 Vertical Video Container */}
+                  <div className="clip-video-wrap">
+                    {clip.video_file ? (
+                      <video
+                        className="clip-video"
+                        controls
+                        playsInline
+                        preload="metadata"
+                        poster={posterUrl}
+                        src={videoUrl}
+                        aria-label={`Preview of ${clip.title}`}
+                      />
+                    ) : isInlinePlaying && clipYtVideoId ? (
+                      <div className="clip-inline-player">
+                        <iframe
+                          className="clip-inline-iframe"
+                          src={`https://www.youtube-nocookie.com/embed/${clipYtVideoId}?start=${Math.floor(clip.start_time)}&end=${Math.ceil(clip.end_time)}&autoplay=1&rel=0&modestbranding=1`}
+                          title={`Preview of ${clip.title}`}
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                          allowFullScreen
+                        />
+                        <button
+                          type="button"
+                          className="clip-inline-close-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setInlinePreviewClipId(null);
+                          }}
+                          title="Close inline preview"
+                        >
+                          <Icon name="close" /> Stop Preview
+                        </button>
+                      </div>
                     ) : (
-                      <div className="clip-preview-placeholder">
-                        <Icon name="play" />
+                      <>
+                        {posterUrl ? (
+                          <img className="clip-preview" src={posterUrl} alt="" />
+                        ) : (
+                          <div className="clip-preview-placeholder">
+                            <Icon name="play" />
+                          </div>
+                        )}
+                        <div className="clip-pending-overlay">
+                          {isRendering ? (
+                            <div className="pending-badge">
+                              <span className="render-spinner"></span>
+                              Rendering 9:16 clip…
+                            </div>
+                          ) : (
+                            <div className="clip-pending-controls">
+                              <button
+                                className="clip-play-hero-btn"
+                                type="button"
+                                onClick={() => setPreviewModalClip(clip)}
+                                title="Play instant preview with timestamps (no download needed)"
+                              >
+                                <span className="play-icon-glow">
+                                  <Icon name="play" />
+                                </span>
+                                <span className="play-title">Play Preview</span>
+                                <span className="play-timing">
+                                  {time(clip.start_time)} – {time(clip.end_time)}
+                                </span>
+                              </button>
+
+                              <div className="clip-pending-subactions">
+                                {clipYtVideoId && (
+                                  <button
+                                    className="button button-quiet button-mini"
+                                    type="button"
+                                    onClick={() => setInlinePreviewClipId(clip.clip_id)}
+                                    title="Play inline inside this card"
+                                  >
+                                    Inline
+                                  </button>
+                                )}
+                                <button
+                                  className="button button-primary button-mini"
+                                  type="button"
+                                  onClick={() => handleRenderClip(clip.clip_id)}
+                                  disabled={isBusy}
+                                  title="Render as 9:16 vertical short with captions"
+                                >
+                                  Render 9:16
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                    <span className="clip-layout">{getLayoutLabel(clip.layout)}</span>
+                  </div>
+
+                  {/* Clip Body */}
+                  <div className="clip-body">
+                    {/* Score Row */}
+                    <div className="clip-score-row">
+                      <span className="score-badge">
+                        <strong className="clip-score">{virality}</strong>
+                        <span>/ 99</span>
+                      </span>
+                      <span className="score-description">Virality Score</span>
+                      <span className="clip-duration">{time(duration)}</span>
+
+                      {/* Feedback rating */}
+                      <div className="clip-rating" role="radiogroup" aria-label="Rate this moment">
+                        {[1, 2, 3, 4, 5].map((star) => (
+                          <button
+                            key={star}
+                            type="button"
+                            className={`star-btn ${(clip.rating || 0) >= star ? 'filled' : ''}`}
+                            onClick={() => handleRateClip(clip.clip_id, star)}
+                            aria-label={`Rate ${star} star`}
+                            title={`Rate ${star} star to train learned weights`}
+                          >
+                            ★
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Title */}
+                    <h3 className="clip-title">{text(clip.title, 'Viral Moment')}</h3>
+
+                    {/* Hook Callout */}
+                    {clip.hook && (
+                      <div className="clip-hook-box">
+                        <p className="clip-hook-label">OPENS ON</p>
+                        <p className="clip-hook">&ldquo;{clip.hook}&rdquo;</p>
                       </div>
                     )}
-                    <div className="clip-pending-overlay">
-                      {isRendering ? (
-                        <div className="pending-badge">
-                          <span className="render-spinner"></span>
-                          Rendering clip…
-                        </div>
-                      ) : (
-                        <button
-                          className="button button-primary button-small"
-                          type="button"
-                          onClick={() => handleRenderClip(clip.clip_id)}
-                          disabled={isBusy}
+
+                    {/* Timestamps */}
+                    <div className="clip-source-time-row">
+                      <span className="clip-source-time">
+                        Source {time(clip.start_time)} – {time(clip.end_time)}
+                      </span>
+                      {clipYtVideoId && (
+                        <a
+                          href={getYouTubeTimestampUrl(job?.source || job?.source_label, clip.start_time)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="clip-youtube-link"
+                          title="Open at this exact timestamp on YouTube"
                         >
-                          <Icon name="play" />
-                          Render video
-                        </button>
+                          <Icon name="youtube" />
+                          <span>{time(clip.start_time)}</span>
+                          <Icon name="external" className="mini-icon" />
+                        </a>
                       )}
                     </div>
-                  </>
-                )}
-                <span className="clip-layout">{getLayoutLabel(clip.layout)}</span>
-              </div>
 
-              {/* Clip Body */}
-              <div className="clip-body">
-                {/* Score Row */}
-                <div className="clip-score-row">
-                  <span className="score-badge">
-                    <strong className="clip-score">{virality}</strong>
-                    <span>/ 99</span>
-                  </span>
-                  <span className="score-description">Virality Score</span>
-                  <span className="clip-duration">{time(duration)}</span>
+                    {/* Why this moment? (Opus Virality Breakdown) */}
+                    <details className="clip-details" open>
+                      <summary>Why this moment?</summary>
+                      {clip.reason && <p className="clip-reason">{clip.reason}</p>}
 
-                  {/* Feedback rating */}
-                  <div className="clip-rating" role="radiogroup" aria-label="Rate this moment">
-                    {[1, 2, 3, 4, 5].map((star) => (
-                      <button
-                        key={star}
-                        type="button"
-                        className={`star-btn ${(clip.rating || 0) >= star ? 'filled' : ''}`}
-                        onClick={() => handleRateClip(clip.clip_id, star)}
-                        aria-label={`Rate ${star} star`}
-                        title={`Rate ${star} star to train learned weights`}
-                      >
-                        ★
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                      {/* 4-signal breakdown bars */}
+                      <div className="score-breakdown">
+                        {(['hook', 'flow', 'value', 'trend'] as const).map((dim) => {
+                          const val = Math.round(number(clip.scores?.[dim], virality));
+                          return (
+                            <div key={dim} className="score-item" data-score={dim}>
+                              <span>{dim.charAt(0).toUpperCase() + dim.slice(1)}</span>
+                              <strong>{val}</strong>
+                              <div className="score-bar" aria-hidden="true">
+                                <span style={{ width: `${Math.max(0, Math.min(100, val))}%` }}></span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <p className="score-disclaimer">
+                        Calculated from speech hook impact, completeness of thought, engagement value, and audio/motion peaks.
+                      </p>
+                    </details>
 
-                {/* Title */}
-                <h3 className="clip-title">{text(clip.title, 'Viral Moment')}</h3>
-
-                {/* Hook Callout */}
-                {clip.hook && (
-                  <div className="clip-hook-box">
-                    <p className="clip-hook-label">OPENS ON</p>
-                    <p className="clip-hook">&ldquo;{clip.hook}&rdquo;</p>
-                  </div>
-                )}
-
-                {/* Timestamps */}
-                <div className="clip-source-time">
-                  Source {time(clip.start_time)} – {time(clip.end_time)}
-                </div>
-
-                {/* Why this moment? (Opus Virality Breakdown) */}
-                <details className="clip-details" open>
-                  <summary>Why this moment?</summary>
-                  {clip.reason && <p className="clip-reason">{clip.reason}</p>}
-
-                  {/* 4-signal breakdown bars */}
-                  <div className="score-breakdown">
-                    {(['hook', 'flow', 'value', 'trend'] as const).map((dim) => {
-                      const val = Math.round(number(clip.scores?.[dim], virality));
-                      return (
-                        <div key={dim} className="score-item" data-score={dim}>
-                          <span>{dim.charAt(0).toUpperCase() + dim.slice(1)}</span>
-                          <strong>{val}</strong>
-                          <div className="score-bar" aria-hidden="true">
-                            <span style={{ width: `${Math.max(0, Math.min(100, val))}%` }}></span>
-                          </div>
+                    {/* Transcript & Caption Accordion */}
+                    <details className="clip-details">
+                      <summary>Transcript & caption</summary>
+                      <p className="clip-transcript">{text(clip.transcript, 'No transcript available.')}</p>
+                      {clip.caption && (
+                        <div style={{ marginTop: '8px' }}>
+                          <strong style={{ fontSize: '11px', color: '#c0cdce' }}>Suggested caption:</strong>
+                          <p className="clip-caption">{clip.caption}</p>
                         </div>
-                      );
-                    })}
+                      )}
+                      {Array.isArray(clip.hashtags) && clip.hashtags.length > 0 && (
+                        <div className="clip-hashtags-wrap">
+                          {clip.hashtags.map((tag, i) => (
+                            <span key={i} className="hashtag-pill">{tag}</span>
+                          ))}
+                        </div>
+                      )}
+                    </details>
+
+                    {/* Action Buttons Toolbar */}
+                    <div className="clip-actions">
+                      {clip.video_file ? (
+                        <a
+                          className="button button-primary button-small"
+                          href={`/download/${encodeURIComponent(clip.video_file)}`}
+                          download
+                        >
+                          <Icon name="download" />
+                          Download MP4
+                        </a>
+                      ) : (
+                        <>
+                          <button
+                            className="button button-small button-preview"
+                            type="button"
+                            onClick={() => setPreviewModalClip(clip)}
+                            title="Instant preview without downloading"
+                          >
+                            <Icon name="play" />
+                            Preview
+                          </button>
+                          <button
+                            className="button button-primary button-small"
+                            type="button"
+                            onClick={() => handleRenderClip(clip.clip_id)}
+                            disabled={isBusy || isRendering}
+                          >
+                            <Icon name="play" />
+                            {isRendering ? 'Rendering…' : 'Render 9:16'}
+                          </button>
+                        </>
+                      )}
+
+                      <button
+                        className="button button-small"
+                        type="button"
+                        onClick={() => setSocialModalClip(clip)}
+                      >
+                        <Icon name="copy" />
+                        Social copy
+                      </button>
+
+                      {subtitleUrl && (
+                        <a
+                          className="button button-small button-quiet"
+                          href={subtitleUrl}
+                          download
+                          title="Download Subtitles (.srt)"
+                        >
+                          <Icon name="download" />
+                          SRT
+                        </a>
+                      )}
+
+                      <button
+                        className="button button-small button-quiet"
+                        type="button"
+                        onClick={() => setEditingClip(editingClip === clip.clip_id ? null : clip.clip_id)}
+                        title="Customize layout, caption style, or trim times"
+                      >
+                        <Icon name="settings" />
+                        {editingClip === clip.clip_id ? 'Close' : 'Re-edit'}
+                      </button>
+                    </div>
+
+                    {/* Re-edit / Editor Section */}
+                    {editingClip === clip.clip_id && (
+                      <ClipEditor
+                        clip={clip}
+                        job={job}
+                        onApply={(changes) => handleReeditClip(clip.clip_id, changes)}
+                        isBusy={isBusy || isRendering}
+                      />
+                    )}
                   </div>
-                  <p className="score-disclaimer">
-                    Calculated from speech hook impact, completeness of thought, engagement value, and audio/motion peaks.
-                  </p>
-                </details>
-
-                {/* Transcript & Caption Accordion */}
-                <details className="clip-details">
-                  <summary>Transcript & caption</summary>
-                  <p className="clip-transcript">{text(clip.transcript, 'No transcript available.')}</p>
-                  {clip.caption && (
-                    <div style={{ marginTop: '8px' }}>
-                      <strong style={{ fontSize: '11px', color: '#c0cdce' }}>Suggested caption:</strong>
-                      <p className="clip-caption">{clip.caption}</p>
-                    </div>
-                  )}
-                  {Array.isArray(clip.hashtags) && clip.hashtags.length > 0 && (
-                    <div className="clip-hashtags-wrap">
-                      {clip.hashtags.map((tag, i) => (
-                        <span key={i} className="hashtag-pill">{tag}</span>
-                      ))}
-                    </div>
-                  )}
-                </details>
-
-                {/* Action Buttons Toolbar */}
-                <div className="clip-actions">
-                  {clip.video_file ? (
-                    <a
-                      className="button button-primary button-small"
-                      href={`/download/${encodeURIComponent(clip.video_file)}`}
-                      download
-                    >
-                      <Icon name="download" />
-                      Download MP4
-                    </a>
-                  ) : (
-                    <button
-                      className="button button-primary button-small"
-                      type="button"
-                      onClick={() => handleRenderClip(clip.clip_id)}
-                      disabled={isBusy || isRendering}
-                    >
-                      <Icon name="play" />
-                      {isRendering ? 'Rendering…' : 'Render video'}
-                    </button>
-                  )}
-
-                  <button
-                    className="button button-small"
-                    type="button"
-                    onClick={() => setSocialModalClip(clip)}
-                  >
-                    <Icon name="copy" />
-                    Social copy
-                  </button>
-
-                  {subtitleUrl && (
-                    <a
-                      className="button button-small button-quiet"
-                      href={subtitleUrl}
-                      download
-                      title="Download Subtitles (.srt)"
-                    >
-                      <Icon name="download" />
-                      SRT
-                    </a>
-                  )}
-
-                  <button
-                    className="button button-small button-quiet"
-                    type="button"
-                    onClick={() => setEditingClip(editingClip === clip.clip_id ? null : clip.clip_id)}
-                    title="Customize layout, caption style, or trim times"
-                  >
-                    <Icon name="settings" />
-                    {editingClip === clip.clip_id ? 'Close' : 'Re-edit'}
-                  </button>
-                </div>
-
-                {/* Re-edit / Editor Section */}
-                {editingClip === clip.clip_id && (
-                  <ClipEditor
-                    clip={clip}
-                    job={job}
-                    onApply={(changes) => handleReeditClip(clip.clip_id, changes)}
-                    isBusy={isBusy || isRendering}
-                  />
-                )}
-              </div>
-            </article>
-          );
-        })}
-      </div>
+                </article>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {sortedClips.length === 0 && !isBusy && (
         <div className="empty-state">
@@ -727,6 +816,16 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
           </p>
         </div>
       )}
+
+      {/* Instant Stream Preview Modal */}
+      <PreviewModal
+        isOpen={Boolean(previewModalClip)}
+        onClose={() => setPreviewModalClip(null)}
+        clip={previewModalClip}
+        job={job}
+        onRenderClip={handleRenderClip}
+        isRendering={Boolean(previewModalClip && renderingClips[previewModalClip.clip_id])}
+      />
 
       {/* Social Copy Modal */}
       <SocialModal

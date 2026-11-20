@@ -73,3 +73,28 @@ export const stageTitles: Record<string, string> = {
 };
 
 export const activeStatuses = new Set(['queued', 'processing']);
+
+export function getYouTubeVideoId(url: string | undefined | null): string | null {
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  const match = trimmed.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|live\/|shorts\/|embed\/)|ytimg\.com\/vi\/)([A-Za-z0-9_-]{11})/i);
+  if (match) return match[1];
+  try {
+    const parsed = new URL(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`);
+    if (parsed.searchParams.has('v')) {
+      return parsed.searchParams.get('v');
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export function getYouTubeTimestampUrl(url: string | undefined | null, seconds: number): string {
+  const videoId = getYouTubeVideoId(url);
+  const sec = Math.max(0, Math.floor(seconds));
+  if (videoId) {
+    return `https://youtu.be/${videoId}?t=${sec}`;
+  }
+  return url || '#';
+}
