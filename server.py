@@ -545,21 +545,43 @@ def hardware_endpoint():
 @app.get("/api/test-formats")
 def test_formats_endpoint():
     url = request.args.get("url", "https://www.youtube.com/live/VZqAPdUvqnQ")
-    from core.remote_source import fetch_info, _resolve_stream_formats
+    use_cookies = request.args.get("cookies", "1") == "1"
+    client_param = request.args.get("client")
+    
+    from core.remote_source import _resolve_stream_formats
     from core.downloader import _ydl_opts
-    opts = _ydl_opts()
+    import yt_dlp
+
+    opts = _ydl_opts(skip_download=True)
+    if not use_cookies:
+        opts.pop("cookiefile", None)
+        opts.pop("cookiesfrombrowser", None)
+    if client_param:
+        clients = [c.strip() for c in client_param.split(",")]
+        opts["extractor_args"] = {"youtube": {"player_client": clients}}
+    
     cookiefile = opts.get("cookiefile")
     cookie_exists = os.path.exists(cookiefile) if cookiefile else False
     cookie_size = os.path.getsize(cookiefile) if cookie_exists else 0
-    info = fetch_info(url)
-    fmts = info.get("formats", [])
+    
+    fmts = []
+    extract_err = None
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            fmts = info.get("formats", [])
+    except Exception as e:
+        extract_err = str(e)
+        info = {}
+
     resolved = None
     res_err = None
-    try:
-        res = _resolve_stream_formats(info)
-        resolved = [{"id": f.get("format_id"), "proto": f.get("protocol"), "vcodec": f.get("vcodec"), "acodec": f.get("acodec")} for f in res]
-    except Exception as e:
-        res_err = str(e)
+    if fmts:
+        try:
+            res = _resolve_stream_formats(info)
+            resolved = [{"id": f.get("format_id"), "proto": f.get("protocol"), "vcodec": f.get("vcodec"), "acodec": f.get("acodec")} for f in res]
+        except Exception as e:
+            res_err = str(e)
     
     summary = [{
         "id": f.get("format_id"),
@@ -574,7 +596,10 @@ def test_formats_endpoint():
         "cookiefile": cookiefile,
         "cookie_exists": cookie_exists,
         "cookie_size": cookie_size,
+        "use_cookies": use_cookies,
+        "client": client_param or opts.get("extractor_args", {}).get("youtube", {}).get("player_client"),
         "total_formats": len(fmts),
+        "extract_err": extract_err,
         "formats": summary,
         "resolved": resolved,
         "res_err": res_err
