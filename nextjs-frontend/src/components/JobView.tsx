@@ -4,6 +4,8 @@ import { useState, useEffect, useRef } from 'react';
 import Icon from './Icon';
 import SocialModal from './SocialModal';
 import PreviewModal from './PreviewModal';
+import BatchYouTubeModal from './BatchYouTubeModal';
+import YoutubeAuthModal from './YoutubeAuthModal';
 import { apiClient } from '@/lib/api';
 import { text, number, time, date, safeUrl, statusNames, stages, stageTitles, activeStatuses, getYouTubeVideoId, getYouTubeTimestampUrl } from '@/lib/utils';
 import type { Job, Clip, CropMode, CaptionStyle, JobStage } from '@/types';
@@ -22,6 +24,8 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
   const [editingClip, setEditingClip] = useState<string | null>(null);
   const [socialModalClip, setSocialModalClip] = useState<Clip | null>(null);
   const [previewModalClip, setPreviewModalClip] = useState<Clip | null>(null);
+  const [batchYtModalOpen, setBatchYtModalOpen] = useState(false);
+  const [youtubeAuthOpen, setYoutubeAuthOpen] = useState(false);
   const [inlinePreviewClipId, setInlinePreviewClipId] = useState<string | null>(null);
   const [renderingClips, setRenderingClips] = useState<Record<string, boolean>>({});
   const [compiling, setCompiling] = useState(false);
@@ -397,6 +401,25 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
             </button>
           )}
 
+          {/* Batch YouTube Upload */}
+          {sortedClips.filter((c) => c.video_file).length > 0 && (
+            <button
+              className="button button-small"
+              type="button"
+              onClick={() => setBatchYtModalOpen(true)}
+              style={{
+                background: 'rgba(255, 78, 78, 0.12)',
+                borderColor: 'rgba(255, 78, 78, 0.35)',
+                color: '#ff6666',
+                fontWeight: 600,
+              }}
+              title="Post rendered clips directly to YouTube Shorts"
+            >
+              <Icon name="youtube" />
+              Publish to YouTube ({sortedClips.filter((c) => c.video_file).length})
+            </button>
+          )}
+
           <label className="sort-control" htmlFor="clipSort">
             Sort by
             <select
@@ -723,14 +746,26 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
                     {/* Action Buttons Toolbar */}
                     <div className="clip-actions">
                       {clip.video_file ? (
-                        <a
-                          className="button button-primary button-small"
-                          href={`/download/${encodeURIComponent(clip.video_file)}`}
-                          download
-                        >
-                          <Icon name="download" />
-                          Download MP4
-                        </a>
+                        <>
+                          <a
+                            className="button button-primary button-small"
+                            href={`/download/${encodeURIComponent(clip.video_file)}`}
+                            download
+                          >
+                            <Icon name="download" />
+                            Download MP4
+                          </a>
+                          <button
+                            className="button button-small button-quiet"
+                            type="button"
+                            onClick={() => setSocialModalClip(clip)}
+                            title="Publish this clip directly as a YouTube Short"
+                            style={{ color: '#ff6666' }}
+                          >
+                            <Icon name="youtube" />
+                            Shorts
+                          </button>
+                        </>
                       ) : (
                         <>
                           <button
@@ -833,6 +868,20 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
         onClose={() => setSocialModalClip(null)}
         jobId={jobId}
         clip={socialModalClip}
+      />
+
+      {/* Batch YouTube Shorts Publisher */}
+      <BatchYouTubeModal
+        isOpen={batchYtModalOpen}
+        onClose={() => setBatchYtModalOpen(false)}
+        job={job}
+        onOpenAuth={() => setYoutubeAuthOpen(true)}
+      />
+
+      {/* YouTube Connection & OAuth Modal */}
+      <YoutubeAuthModal
+        isOpen={youtubeAuthOpen}
+        onClose={() => setYoutubeAuthOpen(false)}
       />
     </section>
   );

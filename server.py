@@ -3,7 +3,7 @@ import re
 import math
 import uuid
 from urllib.parse import urlsplit
-from flask import Flask, request, jsonify, render_template, send_from_directory
+from flask import Flask, request, jsonify, render_template, send_from_directory, redirect
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -13,7 +13,16 @@ from core.pipeline import run_clipcraft_pipeline, rerender_clip, render_pending_
 from core.downloader import get_video_info
 from core.publisher_engine import generate_social_post_package
 from core.llm import describe_llm
-from core.youtube_uploader import get_youtube_service, authenticate_youtube, upload_to_youtube
+from core.youtube_uploader import (
+    get_youtube_service,
+    upload_to_youtube,
+    get_client_credentials,
+    save_client_credentials,
+    get_auth_url,
+    exchange_code_for_token,
+    disconnect_youtube,
+    get_channel_profile
+)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -415,15 +424,134 @@ def social_package(job_id, clip_id):
 
 @app.get("/api/youtube/auth-status")
 def youtube_auth_status():
+    creds = get_client_credentials()
     youtube = get_youtube_service()
-    return jsonify(success=True, authenticated=youtube is not None)
+    channel = get_channel_profile() if youtube else None
+    return jsonify(
+        success=True,
+        configured=creds is not None,
+        authenticated=youtube is not None,
+        channel=channel
+    )
 
 
-@app.post("/api/youtube/authenticate")
-def youtube_authenticate():
+@app.post("/api/youtube/save-credentials")
+def youtube_save_credentials():
+    data = request.get_json(silent=True) or {}
+    cid = (data.get("client_id") or "").strip()
+    csecret = (data.get("client_secret") or "").strip()
+    raw_json = (data.get("client_secrets_json") or "").strip()
+
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+            client_block = parsed.get("web") or parsed.get("installed") or parsed
+            cid = client_block.get("client_id", "").strip()
+            csecret = client_block.get("client_secret", "").strip()
+        except Exception as e:
+            return _error(f"Invalid JSON client secrets format: {e}")
+
+    if not cid or not csecret:
+        return _error("Both Client ID and Client Secret are required.")
+
     try:
-        youtube = authenticate_youtube()
-        return jsonify(success=True, message="YouTube authenticated successfully")
+        path = save_client_credentials(cid, csecret)
+        return jsonify(success=True, message=f"Credentials saved successfully to {path}")
+    except Exception as e:
+        return _error(f"Failed to save credentials: {e}")
+
+
+@app.get("/api/youtube/auth-url")
+def youtube_auth_url():
+    redirect_uri = request.args.get("redirect_uri")
+    if not redirect_uri:
+        # Default to current host callback or Vercel callback
+        redirect_uri = f"{request.host_url.rstrip('/')}/api/youtube/oauth2callback"
+    try:
+        url = get_auth_url(redirect_uri)
+        return jsonify(success=True, auth_url=url, redirect_uri=redirect_uri)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.get("/api/youtube/oauth2callback")
+def youtube_oauth2_callback():
+    code = request.args.get("code")
+    err = request.args.get("error")
+    if err:
+        return f"<h3>Authentication cancelled or failed: {err}</h3><p><a href='/'>Return to ClipCraft</a></p>", 400
+    if not code:
+        return "<h3>Missing authorization code.</h3>", 400
+
+    redirect_uri = request.base_url
+    try:
+        exchange_code_for_token(code, redirect_uri)
+    except Exception as e:
+        alt_uri = "https://clipcraft-production-d672f3fd.up.railway.app/api/youtube/oauth2callback"
+        if redirect_uri != alt_uri:
+            try:
+                exchange_code_for_token(code, alt_uri)
+            except Exception:
+                return f"<h3>Authorization token exchange failed: {e}</h3>", 400
+        else:
+            return f"<h3>Authorization token exchange failed: {e}</h3>", 400
+
+    frontend = os.environ.get("FRONTEND_URL", "https://clipcraft-theta.vercel.app")
+    return f"""
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>YouTube Connected — ClipCraft</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                 background: #0c1015; color: #f0f6fc; display: flex; align-items: center;
+                 justify-content: center; height: 100vh; margin: 0; text-align: center; }}
+          .box {{ background: #161e27; border: 1px solid #283747; border-radius: 12px; padding: 32px 40px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }}
+          h2 {{ color: #c8ff64; margin-top: 0; }}
+          p {{ color: #a2b2c2; font-size: 14px; margin-bottom: 24px; }}
+          a {{ color: #c8ff64; text-decoration: none; font-weight: 600; }}
+        </style>
+      </head>
+      <body>
+        <div class="box">
+          <h2>✓ YouTube Channel Connected!</h2>
+          <p>You can now return to ClipCraft and publish clips directly as YouTube Shorts.</p>
+          <a href="{frontend}/?youtube_connected=true">Continue to Studio &rarr;</a>
+        </div>
+        <script>
+          if (window.opener) {{
+            try {{ window.opener.postMessage({{ type: 'YOUTUBE_AUTH_SUCCESS' }}, '*'); }} catch(e){{}}
+            setTimeout(function() {{ window.close(); }}, 1800);
+          }} else {{
+            setTimeout(function() {{ window.location.href = '{frontend}/?youtube_connected=true'; }}, 1800);
+          }}
+        </script>
+      </body>
+    </html>
+    """
+
+
+@app.post("/api/youtube/exchange-code")
+def youtube_exchange_code():
+    data = request.get_json(silent=True) or {}
+    code = (data.get("code") or "").strip()
+    redirect_uri = (data.get("redirect_uri") or "").strip() or f"{request.host_url.rstrip('/')}/api/youtube/oauth2callback"
+    if not code:
+        return _error("Authorization code is required.")
+    try:
+        token_data = exchange_code_for_token(code, redirect_uri)
+        channel = get_channel_profile()
+        return jsonify(success=True, channel=channel, message="YouTube connected successfully!")
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.post("/api/youtube/disconnect")
+def youtube_disconnect():
+    try:
+        disconnect_youtube()
+        return jsonify(success=True, message="YouTube disconnected successfully")
     except Exception as e:
         return _error(str(e))
 
@@ -442,8 +570,8 @@ def upload_clip_to_youtube(job_id, clip_id):
     data = request.get_json(silent=True) or {}
     title = data.get("title", clip.get("title", ""))[:100]
     description = data.get("description", clip.get("caption", ""))[:5000]
-    tags = data.get("tags", [])[:5]
-    privacy = data.get("privacy", "private")
+    tags = data.get("tags", [])[:15]
+    privacy = data.get("privacy", "public")
 
     video_path = os.path.join(OUTPUTS_DIR, clip["video_file"])
     if not os.path.exists(video_path):
@@ -451,7 +579,12 @@ def upload_clip_to_youtube(job_id, clip_id):
 
     try:
         result = upload_to_youtube(video_path, title, description, tags, privacy)
-        return jsonify(success=True, video_id=result.get("id"))
+        return jsonify(
+            success=True,
+            video_id=result.get("id"),
+            video_url=result.get("url"),
+            url=result.get("url")
+        )
     except Exception as e:
         return _error(str(e))
 
@@ -463,31 +596,57 @@ def upload_all_clips_to_youtube(job_id):
         return _error("Project not found.", 404)
 
     data = request.get_json(silent=True) or {}
-    privacy = data.get("privacy", "private")
+    privacy = data.get("privacy", "public")
+    selected_cids = set(data.get("clip_ids", []))
 
-    clips = [c for c in job.get("clips", []) if c.get("video_file")]
+    all_rendered = [c for c in job.get("clips", []) if c.get("video_file")]
+    if selected_cids:
+        clips = [c for c in all_rendered if c["clip_id"] in selected_cids]
+    else:
+        clips = all_rendered
+
     if not clips:
-        return _error("No rendered clips to upload.", 400)
+        return _error("No rendered clips found to upload. Please render clips first.", 400)
 
     results = []
     for clip in clips:
         video_path = os.path.join(OUTPUTS_DIR, clip["video_file"])
         if not os.path.exists(video_path):
-            results.append({"clip_id": clip["clip_id"], "success": False, "error": "Video file not found"})
+            results.append({"clip_id": clip["clip_id"], "title": clip.get("title", ""), "success": False, "error": "Video file not found"})
             continue
         try:
             result = upload_to_youtube(
                 video_path,
                 clip.get("title", "")[:100],
                 clip.get("caption", "")[:5000],
-                clip.get("hashtags", [])[:5],
+                clip.get("hashtags", [])[:15],
                 privacy
             )
-            results.append({"clip_id": clip["clip_id"], "success": True, "video_id": result.get("id")})
+            vid = result.get("id")
+            vurl = result.get("url")
+            results.append({
+                "clip_id": clip["clip_id"],
+                "title": clip.get("title", ""),
+                "success": True,
+                "video_id": vid,
+                "video_url": vurl,
+                "url": vurl
+            })
         except Exception as e:
-            results.append({"clip_id": clip["clip_id"], "success": False, "error": str(e)[:200]})
+            results.append({
+                "clip_id": clip["clip_id"],
+                "title": clip.get("title", ""),
+                "success": False,
+                "error": str(e)[:250]
+            })
 
-    return jsonify(success=True, results=results)
+    success_count = sum(1 for r in results if r["success"])
+    return jsonify(
+        success=True,
+        total=len(clips),
+        uploaded_count=success_count,
+        results=results
+    )
 
 
 @app.route("/api/settings", methods=["GET", "POST"])

@@ -148,10 +148,45 @@ export const apiClient = {
     api<{ success: boolean; package: SocialPackage }>(`/api/social-package/${jobId}/${clipId}`),
 
   youtubeAuthStatus: () =>
-    api<{ success: boolean; authenticated: boolean }>('/api/youtube/auth-status'),
+    api<{
+      success: boolean;
+      authenticated: boolean;
+      configured: boolean;
+      channel?: {
+        id?: string;
+        title?: string;
+        custom_url?: string;
+        thumbnail?: string;
+        subscriber_count?: string;
+        video_count?: string;
+      };
+    }>('/api/youtube/auth-status'),
 
-  youtubeAuthenticate: () =>
-    api<{ success: boolean; message: string }>('/api/youtube/authenticate', { method: 'POST' }),
+  youtubeGetAuthUrl: (redirectUri?: string) => {
+    const q = redirectUri ? `?redirect_uri=${encodeURIComponent(redirectUri)}` : '';
+    return api<{ success: boolean; auth_url: string; redirect_uri: string }>(`/api/youtube/auth-url${q}`);
+  },
+
+  youtubeSaveCredentials: (clientId: string, clientSecret: string, rawJson?: string) =>
+    api<{ success: boolean; message: string }>('/api/youtube/save-credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: clientSecret,
+        client_secrets_json: rawJson || '',
+      }),
+    }),
+
+  youtubeExchangeCode: (code: string, redirectUri?: string) =>
+    api<{ success: boolean; channel?: any; message?: string }>('/api/youtube/exchange-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, redirect_uri: redirectUri }),
+    }),
+
+  youtubeDisconnect: () =>
+    api<{ success: boolean; message: string }>('/api/youtube/disconnect', { method: 'POST' }),
 
   uploadToYoutube: (
     jobId: string,
@@ -161,19 +196,24 @@ export const apiClient = {
     tags: string[],
     privacy: string
   ) =>
-    api<{ success: boolean; video_id: string }>(`/api/youtube/upload/${jobId}/${clipId}`, {
+    api<{ success: boolean; video_id: string; video_url?: string; url?: string }>(`/api/youtube/upload/${jobId}/${clipId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, description, tags, privacy }),
     }),
 
-  uploadAllToYoutube: (jobId: string, privacy: string) =>
-    api<{ success: boolean; results: Array<{ clip_id: string; success: boolean; video_id?: string; error?: string }> }>(
+  uploadAllToYoutube: (jobId: string, privacy: string, clipIds?: string[]) =>
+    api<{
+      success: boolean;
+      total: number;
+      uploaded_count: number;
+      results: Array<{ clip_id: string; title: string; success: boolean; video_id?: string; video_url?: string; error?: string }>;
+    }>(
       `/api/youtube/upload-all/${jobId}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ privacy }),
+        body: JSON.stringify({ privacy, clip_ids: clipIds || [] }),
       }
     ),
 

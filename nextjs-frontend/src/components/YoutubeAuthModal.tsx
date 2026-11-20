@@ -11,37 +11,145 @@ interface YoutubeAuthModalProps {
 
 export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalProps) {
   const [authenticated, setAuthenticated] = useState(false);
+  const [configured, setConfigured] = useState(false);
+  const [channel, setChannel] = useState<{
+    id?: string;
+    title?: string;
+    custom_url?: string;
+    thumbnail?: string;
+    subscriber_count?: string;
+    video_count?: string;
+  } | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [authenticating, setAuthenticating] = useState(false);
+  const [savingCreds, setSavingCreds] = useState(false);
   const [error, setError] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
+
+  // Form states for manual configuration
+  const [showCredForm, setShowCredForm] = useState(false);
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [rawJson, setRawJson] = useState('');
+
+  // Manual auth code entry
+  const [showCodeInput, setShowCodeInput] = useState(false);
+  const [authCode, setAuthCode] = useState('');
+
+  const checkStatus = async () => {
+    try {
+      setLoading(true);
+      const res = await apiClient.youtubeAuthStatus();
+      setAuthenticated(Boolean(res.authenticated));
+      setConfigured(Boolean(res.configured));
+      setChannel(res.channel || null);
+      if (!res.configured) {
+        setShowCredForm(true);
+      }
+      setLoading(false);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to check status');
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!isOpen) return;
-    let active = true;
-    apiClient.youtubeAuthStatus().then(result => {
-      if (!active) return;
-      setAuthenticated(Boolean(result.authenticated));
-      setLoading(false);
-      setError('');
-    }).catch(err => {
-      if (!active) return;
-      setError(err instanceof Error ? err.message : 'Failed to check auth status');
-      setLoading(false);
-    });
-    return () => { active = false; };
+    checkStatus();
+
+    // Listen for OAuth completion message from popup
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'YOUTUBE_AUTH_SUCCESS') {
+        setAuthenticated(true);
+        setAuthenticating(false);
+        setSuccessMsg('YouTube channel connected successfully!');
+        checkStatus();
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
   }, [isOpen]);
 
-  const handleAuthenticate = async () => {
+  const handleStartOAuth = async () => {
     setAuthenticating(true);
     setError('');
+    setSuccessMsg('');
     try {
-      const result = await apiClient.youtubeAuthenticate();
-      setAuthenticated(true);
-      setAuthenticating(false);
-      setError('');
+      // Determine redirect URI: use current origin callback
+      const redirectUri = `${window.location.origin}/api/youtube/oauth2callback`;
+      const res = await apiClient.youtubeGetAuthUrl(redirectUri);
+      if (res.auth_url) {
+        // Open Google OAuth in a popup window
+        const width = 540;
+        const height = 660;
+        const left = window.screenX + (window.outerWidth - width) / 2;
+        const top = window.screenY + (window.outerHeight - height) / 2;
+        const popup = window.open(
+          res.auth_url,
+          'google_oauth_popup',
+          `width=${width},height=${height},left=${left},top=${top},status=0,toolbar=0,menubar=0`
+        );
+        if (!popup) {
+          // If popup blocked, fallback to top-level navigation
+          window.location.href = res.auth_url;
+        }
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to authenticate');
+      setError(err instanceof Error ? err.message : 'Failed to launch Google authorization');
       setAuthenticating(false);
+    }
+  };
+
+  const handleSaveCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingCreds(true);
+    setError('');
+    setSuccessMsg('');
+    try {
+      await apiClient.youtubeSaveCredentials(clientId, clientSecret, rawJson);
+      setConfigured(true);
+      setShowCredForm(false);
+      setSuccessMsg('Google OAuth credentials saved! Click "Connect YouTube Channel" below.');
+      await checkStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save credentials');
+    } finally {
+      setSavingCreds(false);
+    }
+  };
+
+  const handleExchangeCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authCode.trim()) return;
+    setAuthenticating(true);
+    setError('');
+    setSuccessMsg('');
+    try {
+      const redirectUri = `${window.location.origin}/api/youtube/oauth2callback`;
+      const res = await apiClient.youtubeExchangeCode(authCode.trim(), redirectUri);
+      setAuthenticated(true);
+      setSuccessMsg(res.message || 'YouTube connected successfully!');
+      setShowCodeInput(false);
+      await checkStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Invalid authorization code');
+    } finally {
+      setAuthenticating(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!confirm('Are you sure you want to disconnect this YouTube channel?')) return;
+    try {
+      await apiClient.youtubeDisconnect();
+      setAuthenticated(false);
+      setChannel(null);
+      setSuccessMsg('YouTube channel disconnected.');
+      await checkStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to disconnect');
     }
   };
 
@@ -49,11 +157,11 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
 
   return (
     <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="ytAuthTitle">
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '580px', width: '92vw' }}>
         <div className="modal-heading">
           <div>
             <span className="step-label">INTEGRATIONS</span>
-            <h2 id="ytAuthTitle">YouTube Connection</h2>
+            <h2 id="ytAuthTitle">YouTube Connection & Auto-Publish</h2>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Close" type="button">
             <Icon name="close" />
@@ -61,55 +169,319 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
         </div>
 
         <p className="modal-intro">
-          Connect your YouTube account to publish rendered vertical clips directly as YouTube Shorts.
+          Connect your YouTube account to publish generated 9:16 vertical clips directly as YouTube Shorts, individually or in bulk.
         </p>
 
         {loading ? (
-          <p className="loading-text">Checking authentication status…</p>
+          <p className="loading-text" style={{ padding: '24px 0', textAlign: 'center' }}>
+            Checking connection status…
+          </p>
         ) : (
-          <div style={{ marginTop: '16px' }}>
+          <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
             {error && <p className="inline-message error">{error}</p>}
+            {successMsg && <p className="inline-message info" style={{ color: 'var(--lime, #c8ff64)' }}>{successMsg}</p>}
 
+            {/* 1. Connected State */}
             {authenticated ? (
-              <div className="auth-status-card success">
-                <div className="auth-status-icon">
-                  <Icon name="check" />
+              <div
+                style={{
+                  background: 'rgba(200, 255, 100, 0.08)',
+                  border: '1px solid rgba(200, 255, 100, 0.3)',
+                  borderRadius: '12px',
+                  padding: '20px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '16px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                  {channel?.thumbnail ? (
+                    <img
+                      src={channel.thumbnail}
+                      alt={channel.title || 'Channel Avatar'}
+                      style={{ width: '48px', height: '48px', borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--lime)' }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        width: '48px',
+                        height: '48px',
+                        borderRadius: '50%',
+                        background: 'rgba(255, 78, 78, 0.15)',
+                        color: '#ff4e4e',
+                        display: 'grid',
+                        placeItems: 'center',
+                      }}
+                    >
+                      <Icon name="youtube" />
+                    </div>
+                  )}
+
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <strong style={{ fontSize: '16px', color: '#fff' }}>{channel?.title || 'YouTube Channel Connected'}</strong>
+                      <span
+                        style={{
+                          background: 'rgba(200, 255, 100, 0.2)',
+                          color: 'var(--lime, #c8ff64)',
+                          fontSize: '10px',
+                          fontWeight: 700,
+                          padding: '2px 6px',
+                          borderRadius: '8px',
+                        }}
+                      >
+                        ACTIVE
+                      </span>
+                    </div>
+                    {channel?.custom_url && (
+                      <p style={{ margin: '2px 0 0', fontSize: '12px', color: 'var(--muted)' }}>{channel.custom_url}</p>
+                    )}
+                    {channel?.subscriber_count && (
+                      <p style={{ margin: '2px 0 0', fontSize: '12px', color: 'var(--muted)' }}>
+                        {Number(channel.subscriber_count).toLocaleString()} subscribers
+                      </p>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <strong>YouTube Connected</strong>
-                  <p className="muted" style={{ fontSize: '12px', marginTop: '4px' }}>
-                    Your channel is linked. You can publish clips directly to YouTube Shorts from the Social Copy dialog.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="auth-status-card">
-                <div className="auth-status-icon">
-                  <Icon name="youtube" />
-                </div>
-                <div>
-                  <strong>Connect Your YouTube Channel</strong>
-                  <p className="muted" style={{ fontSize: '12px', marginTop: '4px', marginBottom: '14px' }}>
-                    Authorize ClipCraft with your Google account. OAuth credentials remain local on your machine.
-                  </p>
+
+                <p style={{ fontSize: '13px', color: '#c5d2dd', margin: 0 }}>
+                  You can now upload rendered vertical clips directly to YouTube Shorts with 1 click, or batch upload all candidate clips together.
+                </p>
+
+                <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
                   <button
-                    className="button button-primary button-small"
-                    onClick={handleAuthenticate}
-                    disabled={authenticating}
+                    className="button button-small button-danger"
                     type="button"
+                    onClick={handleDisconnect}
                   >
-                    <Icon name="youtube" />
-                    {authenticating ? 'Connecting in browser…' : 'Authenticate YouTube'}
+                    Disconnect Channel
+                  </button>
+                  <button
+                    className="button button-small button-quiet"
+                    type="button"
+                    onClick={() => setShowCredForm(!showCredForm)}
+                  >
+                    {showCredForm ? 'Hide API Settings' : 'Change OAuth Keys'}
                   </button>
                 </div>
               </div>
+            ) : configured ? (
+              /* 2. Configured but Not Signed In */
+              <div
+                style={{
+                  background: '#141c24',
+                  border: '1px solid #283747',
+                  borderRadius: '12px',
+                  padding: '20px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '14px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div
+                    style={{
+                      width: '40px',
+                      height: '40px',
+                      borderRadius: '50%',
+                      background: 'rgba(255, 78, 78, 0.15)',
+                      color: '#ff4e4e',
+                      display: 'grid',
+                      placeItems: 'center',
+                    }}
+                  >
+                    <Icon name="youtube" />
+                  </div>
+                  <div>
+                    <strong style={{ fontSize: '15px' }}>Sign In with YouTube</strong>
+                    <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>
+                      OAuth credentials detected. Click below to authorize ClipCraft to publish Shorts.
+                    </p>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '6px' }}>
+                  <button
+                    className="button button-primary"
+                    type="button"
+                    onClick={handleStartOAuth}
+                    disabled={authenticating}
+                    style={{ flex: 1, justifyContent: 'center' }}
+                  >
+                    <Icon name="youtube" />
+                    {authenticating ? 'Connecting…' : 'Sign in with Google'}
+                  </button>
+                  <button
+                    className="button button-quiet button-small"
+                    type="button"
+                    onClick={() => setShowCodeInput(!showCodeInput)}
+                    title="If popup does not redirect automatically"
+                  >
+                    Paste Code
+                  </button>
+                </div>
+
+                {showCodeInput && (
+                  <form onSubmit={handleExchangeCode} style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <label style={{ fontSize: '12px', color: 'var(--muted)' }}>Paste Google Authorization Code:</label>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <input
+                        type="text"
+                        placeholder="4/0AX4XfWi..."
+                        value={authCode}
+                        onChange={(e) => setAuthCode(e.target.value)}
+                        style={{ flex: 1, fontSize: '13px', padding: '8px 10px' }}
+                      />
+                      <button className="button button-small button-primary" type="submit" disabled={authenticating || !authCode.trim()}>
+                        Connect
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                <div style={{ borderTop: '1px solid #1f2a36', paddingTop: '10px' }}>
+                  <button
+                    className="button button-quiet button-small"
+                    type="button"
+                    onClick={() => setShowCredForm(!showCredForm)}
+                    style={{ fontSize: '11px' }}
+                  >
+                    {showCredForm ? 'Hide Google Cloud OAuth Keys' : 'Edit Google Cloud OAuth Keys'}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {/* 3. Credential Setup Form (shown if not configured or toggled) */}
+            {(!configured || showCredForm) && (
+              <form
+                onSubmit={handleSaveCredentials}
+                style={{
+                  background: '#121820',
+                  border: '1px solid #23303e',
+                  borderRadius: '12px',
+                  padding: '18px 20px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <strong style={{ fontSize: '14px', color: 'var(--lime, #c8ff64)' }}>
+                    Google Cloud OAuth 2.0 Credentials
+                  </strong>
+                  {configured && (
+                    <button
+                      type="button"
+                      className="button button-quiet button-mini"
+                      onClick={() => setShowCredForm(false)}
+                    >
+                      Close
+                    </button>
+                  )}
+                </div>
+
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>
+                  To enable automated YouTube uploads, create an OAuth 2.0 Client ID in your Google Cloud Console.
+                </p>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <label className="field" style={{ margin: 0 }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600 }}>Client ID</span>
+                    <input
+                      type="text"
+                      placeholder="xxxxxx.apps.googleusercontent.com"
+                      value={clientId}
+                      onChange={(e) => setClientId(e.target.value)}
+                      required={!rawJson}
+                      style={{ fontSize: '13px' }}
+                    />
+                  </label>
+
+                  <label className="field" style={{ margin: 0 }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600 }}>Client Secret</span>
+                    <input
+                      type="password"
+                      placeholder="GOCSPX-xxxxxx"
+                      value={clientSecret}
+                      onChange={(e) => setClientSecret(e.target.value)}
+                      required={!rawJson}
+                      style={{ fontSize: '13px' }}
+                    />
+                  </label>
+
+                  <div style={{ fontSize: '11px', color: 'var(--muted)', textAlign: 'center', margin: '4px 0' }}>
+                    — OR paste raw client_secrets.json —
+                  </div>
+
+                  <textarea
+                    placeholder='{"web":{"client_id":"...","client_secret":"..."}}'
+                    rows={3}
+                    value={rawJson}
+                    onChange={(e) => setRawJson(e.target.value)}
+                    style={{ fontSize: '11px', fontFamily: 'monospace' }}
+                  />
+                </div>
+
+                <button
+                  className="button button-primary button-small"
+                  type="submit"
+                  disabled={savingCreds}
+                  style={{ alignSelf: 'flex-start', marginTop: '4px' }}
+                >
+                  {savingCreds ? 'Saving…' : 'Save Credentials'}
+                </button>
+
+                {/* Step-by-step helper */}
+                <details style={{ marginTop: '8px', fontSize: '12px', color: '#b0c0ce' }}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 600, color: 'var(--lime, #c8ff64)' }}>
+                    How to get Google Cloud credentials in 2 minutes &rarr;
+                  </summary>
+                  <ol style={{ paddingLeft: '20px', lineHeight: '1.6', marginTop: '8px', fontSize: '12px' }}>
+                    <li>
+                      Go to{' '}
+                      <a
+                        href="https://console.cloud.google.com/apis/credentials"
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: 'var(--lime, #c8ff64)', textDecoration: 'underline' }}
+                      >
+                        Google Cloud Console &rarr; Credentials
+                      </a>
+                    </li>
+                    <li>Create a Project and enable <strong>YouTube Data API v3</strong> under Enabled APIs.</li>
+                    <li>Configure your OAuth Consent Screen (User Type: External, add your Gmail under Test Users).</li>
+                    <li>Click <strong>Create Credentials &rarr; OAuth client ID</strong>.</li>
+                    <li>Application type: <strong>Web application</strong>.</li>
+                    <li>
+                      Add Authorized Redirect URIs:
+                      <div
+                        style={{
+                          background: '#0b0f14',
+                          padding: '6px 10px',
+                          borderRadius: '6px',
+                          margin: '4px 0',
+                          fontFamily: 'monospace',
+                          fontSize: '11px',
+                          color: '#fff',
+                        }}
+                      >
+                        https://clipcraft-theta.vercel.app/api/youtube/oauth2callback
+                        <br />
+                        https://clipcraft-production-d672f3fd.up.railway.app/api/youtube/oauth2callback
+                      </div>
+                    </li>
+                    <li>Copy your <strong>Client ID</strong> &amp; <strong>Client Secret</strong> and paste them above!</li>
+                  </ol>
+                </details>
+              </form>
             )}
           </div>
         )}
 
-        <div className="modal-actions">
+        <div className="modal-actions" style={{ marginTop: '20px' }}>
           <button className="button button-quiet" onClick={onClose} type="button">
-            Close
+            Done
           </button>
         </div>
       </div>
