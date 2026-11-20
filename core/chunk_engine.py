@@ -101,11 +101,8 @@ def get_hardware_profile() -> dict:
         max_workers = 3
     else:
         # On CPU (e.g. Railway or basic cloud VMs):
-        # 4 workers running ffmpeg + OpenCV easily exceed 1GB RAM and 100% CPU, causing OOM kills / server restarts.
-        if ram_gb <= 3.5:
-            max_workers = 1
-        else:
-            max_workers = min(2, os.cpu_count() or 1)
+        # Run 1 worker sequentially for maximum stability, zero socket hangs, and fast throughput.
+        max_workers = 1
 
     return {
         "gpu_count": gpu_count,
@@ -192,6 +189,7 @@ def render_clips_chunked_parallel(
         # Step 1: Ingest chunk (directly to RAM disk if available)
         chunk_file = None
         try:
+            log_event(job_id, f"Cutting clip {index + 1}/{total}: \"{clip.get('title', '')[:35]}\"...")
             if video_path:
                 in_video = video_path
                 in_clip = clip

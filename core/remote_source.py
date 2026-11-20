@@ -376,14 +376,14 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
     cookie_hdr = _get_cookie_header()
     print(f"[DOWNLOAD_SECTION START] is_hls={is_hls} fmts_len={len(fmts)} formats={[(f.get('format_id'), f.get('protocol'), f.get('vcodec'), f.get('acodec'), f.get('url')[:60] if f.get('url') else None) for f in fmts]}", flush=True)
 
-    cmd = [FFMPEG_EXE, "-y", "-v", "warning"]
-    if is_hls:
-        cmd += [
-            "-reconnect", "1",
-            "-reconnect_at_eof", "1",
-            "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "5",
-        ]
+    cmd = [
+        FFMPEG_EXE, "-y", "-v", "warning",
+        "-reconnect", "1",
+        "-reconnect_at_eof", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+        "-timeout", "15000000",
+    ]
     for f in fmts:
         headers = dict(f.get("http_headers") or info.get("http_headers") or {})
         # Only inject Cookie header for non-HLS streams (HLS URLs already carry auth tokens in query; 6KB cookies cause 400 Bad Request on manifest servers)
@@ -391,14 +391,14 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
             headers["Cookie"] = cookie_hdr
         if headers:
             cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-        cmd += ["-ss", f"{start:.3f}", "-i", f["url"]]
+        cmd += ["-seekable", "1", "-ss", f"{start:.3f}", "-i", f["url"]]
     cmd += ["-t", f"{end - start:.3f}", "-map", "0:v:0", "-map", f"{len(fmts) - 1}:a:0?", "-avoid_negative_ts", "make_zero"]
 
     # Only attempt stream copy on direct non-HLS streams; HLS requires re-encoding to avoid broken timestamps / 0 frames
     if not is_hls:
         try:
             r_copy = subprocess.run(cmd + ["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", out_path],
-                                    capture_output=True, text=True, timeout=30)
+                                    capture_output=True, text=True, timeout=25)
             if r_copy.returncode == 0 and _has_valid_video(out_path):
                 return out_path
         except Exception:
@@ -424,7 +424,7 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
     candidates.append(cpu_args)
 
     for video_args in candidates:
-        r = subprocess.run(cmd_transcode + video_args + [out_path], capture_output=True, text=True, timeout=900)
+        r = subprocess.run(cmd_transcode + video_args + [out_path], capture_output=True, text=True, timeout=60)
         size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
         print(f"[TRANSCODE RESULT] encoder={video_args[1]} code={r.returncode} size={size}", flush=True)
         if r.returncode == 0 and size > 20000:
@@ -481,16 +481,23 @@ def preview_frame(info: dict, t: float, out_path: str, source: str = None) -> st
     vfmt = next((f for f in fmts if f.get("vcodec") not in (None, "none")), fmts[0])
     is_hls = any(f.get("protocol") in ("m3u8", "m3u8_native") or ".m3u8" in f.get("url", "") for f in fmts)
     cookie_hdr = _get_cookie_header()
-    cmd = [FFMPEG_EXE, "-y", "-v", "error", "-ss", f"{max(0.0, t):.3f}"]
+    cmd = [
+        FFMPEG_EXE, "-y", "-v", "error",
+        "-reconnect", "1",
+        "-reconnect_at_eof", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+        "-timeout", "10000000",
+    ]
     headers = dict(vfmt.get("http_headers") or info.get("http_headers") or {})
     if not is_hls and cookie_hdr and "Cookie" not in headers:
         headers["Cookie"] = cookie_hdr
     if headers:
         cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-    cmd += ["-i", vfmt["url"], "-frames:v", "1",
+    cmd += ["-seekable", "1", "-ss", f"{max(0.0, t):.3f}", "-i", vfmt["url"], "-frames:v", "1",
             "-vf", "scale=360:640:force_original_aspect_ratio=increase,crop=360:640",
             "-q:v", "3", out_path]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
     if r.returncode != 0 or not os.path.exists(out_path):
         raise RuntimeError(f"Could not grab a preview frame: {r.stderr.strip()[-200:]}")
     return out_path

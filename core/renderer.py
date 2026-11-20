@@ -138,7 +138,12 @@ def _encode(cmd, duration, callback):
                 if callback and time.monotonic() - last > 0.7:
                     callback(pct)
                     last = time.monotonic()
-        proc.wait()
+        try:
+            proc.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            return -1, "Video rendering timed out after 120s"
         errors.seek(0)
         return proc.returncode, errors.read()[-2000:]
 
