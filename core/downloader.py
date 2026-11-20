@@ -34,6 +34,11 @@ def _ydl_opts(**extra) -> dict:
         "no_warnings": True,
         "noplaylist": True,
         "ffmpeg_location": ffmpeg_dir(),
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["tv_embedded", "android_creator"]
+            }
+        },
     }
     if NODE_EXE and os.path.exists(NODE_EXE):
         opts["js_runtimes"] = {"node": {"path": NODE_EXE}}
@@ -80,6 +85,15 @@ def _ydl_opts(**extra) -> dict:
         opts["cookiefile"] = cookie_file
     elif settings.get("cookies_from_browser"):
         opts["cookiesfrombrowser"] = (settings["cookies_from_browser"],)
+
+    if "extractor_args" in extra:
+        ea = extra.pop("extractor_args")
+        if isinstance(ea, dict):
+            for k, v in ea.items():
+                if k in opts["extractor_args"] and isinstance(opts["extractor_args"][k], dict) and isinstance(v, dict):
+                    opts["extractor_args"][k].update(v)
+                else:
+                    opts["extractor_args"][k] = v
 
     opts.update(extra)
     return opts
