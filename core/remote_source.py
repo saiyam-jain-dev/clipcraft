@@ -297,8 +297,9 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
     fmts = _resolve_stream_formats(info)
     is_hls = any(f.get("protocol") in ("m3u8", "m3u8_native") or ".m3u8" in f.get("url", "") for f in fmts)
     cookie_hdr = _get_cookie_header()
+    print(f"[DOWNLOAD_SECTION START] is_hls={is_hls} fmts_len={len(fmts)} formats={[(f.get('format_id'), f.get('protocol'), f.get('vcodec'), f.get('acodec'), f.get('url')[:60] if f.get('url') else None) for f in fmts]}", flush=True)
 
-    cmd = [FFMPEG_EXE, "-y", "-v", "error"]
+    cmd = [FFMPEG_EXE, "-y", "-v", "warning"]
     for f in fmts:
         headers = dict(f.get("http_headers") or info.get("http_headers") or {})
         # Only inject Cookie header for non-HLS streams (HLS URLs already carry auth tokens in query; 6KB cookies cause 400 Bad Request on manifest servers)
@@ -340,10 +341,12 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
 
     for video_args in candidates:
         r = subprocess.run(cmd_transcode + video_args + [out_path], capture_output=True, text=True, timeout=900)
-        if r.returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 20000:
+        size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+        print(f"[TRANSCODE RESULT] encoder={video_args[1]} code={r.returncode} size={size}", flush=True)
+        if r.returncode == 0 and size > 20000:
             return out_path
         last_err = (r.stderr or "").strip() or "Transcoding failed to produce an output file"
-        print(f"[TRANSCODE DEBUG] encoder={video_args[1]} code={r.returncode} size={os.path.getsize(out_path) if os.path.exists(out_path) else 0} err={last_err[-250:]}", flush=True)
+        print(f"[TRANSCODE FAILED] stderr={last_err[-800:]}", flush=True)
         if os.path.exists(out_path):
             try:
                 os.remove(out_path)
