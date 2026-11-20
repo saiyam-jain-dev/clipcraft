@@ -264,7 +264,19 @@ def _preview_frames(job_id, source, video_path, clips, src_info):
             if video_path:
                 grab_thumbnail(video_path, mid, path)
             elif src_info:
-                remote.preview_frame(src_info, mid, path, source=source)
+                try:
+                    remote.preview_frame(src_info, mid, path, source=source)
+                except Exception as frame_err:
+                    # Fallback to remote thumbnail if range-seek was blocked
+                    thumb_url = src_info.get("thumbnail") or (f"https://i.ytimg.com/vi/{src_info.get('id')}/hqdefault.jpg" if src_info.get("id") else None)
+                    if thumb_url:
+                        import requests
+                        r = requests.get(thumb_url, timeout=5)
+                        if r.status_code == 200:
+                            with open(path, "wb") as f:
+                                f.write(r.content)
+                    if not os.path.exists(path):
+                        raise frame_err
             else:
                 return None
         except Exception as e:

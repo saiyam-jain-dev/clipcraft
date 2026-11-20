@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import requests
 import google.oauth2.credentials
 from google.auth.transport.requests import Request as GoogleRequest
@@ -138,7 +139,9 @@ def get_auth_url(redirect_uri: str) -> str:
     creds = get_client_credentials()
     if not creds:
         raise RuntimeError("YouTube OAuth credentials not configured. Please provide Client ID and Client Secret.")
-    
+
+    state_payload = base64.urlsafe_b64encode(json.dumps({"redirect_uri": redirect_uri}).encode("utf-8")).decode("utf-8")
+
     params = {
         "client_id": creds["client_id"],
         "redirect_uri": redirect_uri,
@@ -147,6 +150,7 @@ def get_auth_url(redirect_uri: str) -> str:
         "access_type": "offline",
         "prompt": "consent",
         "include_granted_scopes": "true",
+        "state": state_payload,
     }
     return f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
 

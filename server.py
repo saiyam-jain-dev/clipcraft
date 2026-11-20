@@ -2,6 +2,8 @@ import os
 import re
 import math
 import uuid
+import json
+import base64
 from urllib.parse import urlsplit
 from flask import Flask, request, jsonify, render_template, send_from_directory, redirect
 from flask_cors import CORS
@@ -478,23 +480,81 @@ def youtube_auth_url():
 def youtube_oauth2_callback():
     code = request.args.get("code")
     err = request.args.get("error")
+    state = request.args.get("state")
     if err:
         return f"<h3>Authentication cancelled or failed: {err}</h3><p><a href='/'>Return to ClipCraft</a></p>", 400
     if not code:
         return "<h3>Missing authorization code.</h3>", 400
 
-    redirect_uri = request.base_url
-    try:
-        exchange_code_for_token(code, redirect_uri)
-    except Exception as e:
-        alt_uri = "https://clipcraft-production-d672f3fd.up.railway.app/api/youtube/oauth2callback"
-        if redirect_uri != alt_uri:
-            try:
-                exchange_code_for_token(code, alt_uri)
-            except Exception:
-                return f"<h3>Authorization token exchange failed: {e}</h3>", 400
-        else:
-            return f"<h3>Authorization token exchange failed: {e}</h3>", 400
+    extracted_uri = None
+    if state:
+        try:
+            padded = state + "=" * (-len(state) % 4)
+            data = json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"))
+            extracted_uri = data.get("redirect_uri")
+        except Exception:
+            extracted_uri = None
+
+    candidates = []
+    if extracted_uri:
+        candidates.append(extracted_uri)
+
+    # Standard candidate redirect URIs in priority order
+    candidates.append("https://clipcraft-theta.vercel.app/api/youtube/oauth2callback")
+    candidates.append("https://clipcraft-production-d672f3fd.up.railway.app/api/youtube/oauth2callback")
+
+    f_proto = request.headers.get("X-Forwarded-Proto", "https")
+    f_host = request.headers.get("X-Forwarded-Host")
+    if f_host:
+        candidates.append(f"{f_proto}://{f_host}/api/youtube/oauth2callback")
+    candidates.append(request.base_url)
+
+    seen = set()
+    ordered_uris = [u for u in candidates if u and not (u in seen or seen.add(u))]
+
+    exchanged = False
+    last_err = ""
+    for r_uri in ordered_uris:
+        try:
+            exchange_code_for_token(code, r_uri)
+            exchanged = True
+            break
+        except Exception as e:
+            last_err = str(e)
+            if "redirect_uri_mismatch" not in last_err.lower():
+                break
+
+    if not exchanged:
+        return f"""
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Authorization Failed — ClipCraft</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+              body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                     background: #0c1015; color: #f0f6fc; display: flex; align-items: center;
+                     justify-content: center; height: 100vh; margin: 0; text-align: center; }}
+              .box {{ background: #161e27; border: 1px solid #e5534b; border-radius: 12px; padding: 32px 40px; max-width: 520px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }}
+              h2 {{ color: #e5534b; margin-top: 0; }}
+              p {{ color: #a2b2c2; font-size: 14px; margin-bottom: 24px; word-break: break-word; }}
+              a {{ color: #c8ff64; text-decoration: none; font-weight: 600; }}
+            </style>
+          </head>
+          <body>
+            <div class="box">
+              <h2>Authorization Failed</h2>
+              <p>{last_err}</p>
+              <a href="/">&larr; Return to ClipCraft</a>
+            </div>
+            <script>
+              if (window.opener) {{
+                try {{ window.opener.postMessage({{ type: 'YOUTUBE_AUTH_ERROR', error: '{last_err}' }}, '*'); }} catch(e){{}}
+              }}
+            </script>
+          </body>
+        </html>
+        """, 400
 
     frontend = os.environ.get("FRONTEND_URL", "https://clipcraft-theta.vercel.app")
     return f"""
@@ -536,15 +596,32 @@ def youtube_oauth2_callback():
 def youtube_exchange_code():
     data = request.get_json(silent=True) or {}
     code = (data.get("code") or "").strip()
-    redirect_uri = (data.get("redirect_uri") or "").strip() or f"{request.host_url.rstrip('/')}/api/youtube/oauth2callback"
+    redirect_uri = (data.get("redirect_uri") or "").strip()
     if not code:
         return _error("Authorization code is required.")
-    try:
-        token_data = exchange_code_for_token(code, redirect_uri)
-        channel = get_channel_profile()
-        return jsonify(success=True, channel=channel, message="YouTube connected successfully!")
-    except Exception as e:
-        return _error(str(e))
+
+    candidates = []
+    if redirect_uri:
+        candidates.append(redirect_uri)
+    candidates.extend([
+        "https://clipcraft-theta.vercel.app/api/youtube/oauth2callback",
+        "https://clipcraft-production-d672f3fd.up.railway.app/api/youtube/oauth2callback",
+        f"{request.host_url.rstrip('/')}/api/youtube/oauth2callback"
+    ])
+    seen = set()
+    ordered = [u for u in candidates if u and not (u in seen or seen.add(u))]
+
+    last_err = ""
+    for r_uri in ordered:
+        try:
+            token_data = exchange_code_for_token(code, r_uri)
+            channel = get_channel_profile()
+            return jsonify(success=True, channel=channel, message="YouTube connected successfully!", token=token_data)
+        except Exception as e:
+            last_err = str(e)
+            if "redirect_uri_mismatch" not in last_err.lower():
+                break
+    return _error(f"Failed to exchange code: {last_err}")
 
 
 @app.post("/api/youtube/disconnect")

@@ -66,6 +66,9 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
         setAuthenticating(false);
         setSuccessMsg('YouTube channel connected successfully!');
         checkStatus();
+      } else if (event.data?.type === 'YOUTUBE_AUTH_ERROR') {
+        setAuthenticating(false);
+        setError(event.data?.error || 'Authentication failed');
       }
     };
     window.addEventListener('message', handleMessage);
@@ -94,6 +97,14 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
         if (!popup) {
           // If popup blocked, fallback to top-level navigation
           window.location.href = res.auth_url;
+        } else {
+          const pollTimer = setInterval(() => {
+            if (popup.closed) {
+              clearInterval(pollTimer);
+              setAuthenticating(false);
+              checkStatus();
+            }
+          }, 800);
         }
       }
     } catch (err) {
