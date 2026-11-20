@@ -14,15 +14,29 @@ from .downloader import _ydl_opts, _friendly_error
 
 # H.264 first (OpenCV face tracking can't reliably decode AV1 on Windows); 30 fps is plenty for Shorts.
 VIDEO_FORMAT = ("bv*[height<=1080][fps<=30][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][fps<=30]+ba/"
-                "bv*[height<=1080]+ba/b[height<=1080]/b")
+                "bv*[height<=1080]+ba/b[height<=1080]/best/b")
 
 
 def fetch_info(source: str, **extra) -> dict:
-    try:
-        with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, **extra)) as ydl:
-            info = ydl.extract_info(source, download=False)
-    except Exception as e:
-        raise RuntimeError(_friendly_error(e)) from e
+    process = extra.pop("process", None)
+    if process is None:
+        try:
+            with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, **extra)) as ydl:
+                info = ydl.extract_info(source, download=False)
+        except Exception as e:
+            msg = str(e)
+            if "Requested format is not available" in msg or "No video formats found" in msg:
+                with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, **extra)) as ydl:
+                    info = ydl.extract_info(source, download=False, process=False)
+            else:
+                raise RuntimeError(_friendly_error(e)) from e
+    else:
+        try:
+            with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, **extra)) as ydl:
+                info = ydl.extract_info(source, download=False, process=process)
+        except Exception as e:
+            raise RuntimeError(_friendly_error(e)) from e
+
     if info.get("is_live"):
         raise RuntimeError("Live streams cannot be clipped until the recording has finished.")
     if info.get("_type") == "playlist":
@@ -126,7 +140,7 @@ def download_audio(info: dict, source: str, start: float, end: float, progress_c
     best = max(audio, key=lambda f: f.get("abr") or 0, default={})
     size = best.get("filesize") or best.get("filesize_approx") or (best.get("abr") or 160) * 125 * duration
     check_space(size * ((end - start) / duration if duration else 1))
-    opts = _ydl_opts(format="ba[ext=m4a]/ba/b", outtmpl=base + ".%(ext)s",
+    opts = _ydl_opts(format="ba[ext=m4a]/ba/b/best", outtmpl=base + ".%(ext)s",
                      progress_hooks=[_progress_hook(progress_callback, "Downloading audio only...")])
     if ranged:
         opts["download_ranges"] = download_range_func(None, [(start, end)])
@@ -134,7 +148,14 @@ def download_audio(info: dict, source: str, start: float, end: float, progress_c
         with yt_dlp.YoutubeDL(opts) as ydl:
             res = ydl.extract_info(source, download=True)
     except Exception as e:
-        raise RuntimeError(_friendly_error(e)) from e
+        # Fallback to broader format selector if specific audio format was unavailable
+        try:
+            fallback_opts = dict(opts)
+            fallback_opts["format"] = "bestaudio/best"
+            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                res = ydl.extract_info(source, download=True)
+        except Exception:
+            raise RuntimeError(_friendly_error(e)) from e
     return res["requested_downloads"][0]["filepath"]
 
 
@@ -181,7 +202,10 @@ def loud_windows(profile: dict, count: int, length: float) -> list:
 def download_section(source: str, start: float, end: float, out_path: str, info: dict = None, gpu_id: int = None) -> str:
     """Frame-accurate cut of [start, end] straight from the stream URLs (HTTP range seeks, no full download)."""
     if info is None:
-        info = fetch_info(source, format=VIDEO_FORMAT)
+        try:
+            info = fetch_info(source, format=VIDEO_FORMAT)
+        except Exception:
+            info = fetch_info(source, format="best/b")
     fmts = info.get("requested_formats") or [info]
     cmd = [FFMPEG_EXE, "-y", "-v", "error"]
     for f in fmts:

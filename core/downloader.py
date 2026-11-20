@@ -16,6 +16,9 @@ def format_duration(seconds: float) -> str:
 
 def ffmpeg_dir() -> str:
     """yt-dlp only recognises a binary named ffmpeg(.exe); imageio-ffmpeg's has a versioned name."""
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        return os.path.dirname(os.path.abspath(system_ffmpeg))
     folder = os.path.join(os.path.dirname(DOWNLOADS_DIR), "bin")
     exe = os.path.join(folder, "ffmpeg.exe" if os.name == "nt" else "ffmpeg")
     if not os.path.exists(exe):
@@ -32,8 +35,10 @@ def _ydl_opts(**extra) -> dict:
         "noplaylist": True,
         "ffmpeg_location": ffmpeg_dir(),
     }
-    if os.path.exists(NODE_EXE):
+    if NODE_EXE and os.path.exists(NODE_EXE):
         opts["js_runtimes"] = {"node": {"path": NODE_EXE}}
+    else:
+        opts["js_runtimes"] = {"node": {}}
 
     # Cookies support: Netscape cookies file (servers/Docker) or browser cookies (desktop)
     cookie_file = settings.get("ytdlp_cookies_file") or os.getenv("YTDLP_COOKIES_FILE")
