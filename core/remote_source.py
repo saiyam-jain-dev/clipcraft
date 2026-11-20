@@ -229,28 +229,67 @@ def _resolve_stream_formats(info: dict) -> list:
                 except Exception:
                     pass
 
-    # 1. Combined audio+video format (e.g. 1080p m3u8 format 301 or progressive 720p format 18/22)
-    combined = [f for f in formats if f.get("url") and f.get("vcodec") not in (None, "none") and f.get("acodec") not in (None, "none")]
-    if combined:
-        under_1080 = [f for f in combined if (f.get("height") or 0) <= 1080]
-        pool = under_1080 or combined
+    # 1. Prioritize direct non-HLS combined audio+video formats (progressive mp4 / webm)
+    # Direct HTTPS streams use HTTP byte-range requests and do NOT fail with HLS manifest 403 Forbidden errors
+    direct_combined = [
+        f for f in formats
+        if f.get("url")
+        and f.get("vcodec") not in (None, "none")
+        and f.get("acodec") not in (None, "none")
+        and f.get("protocol") not in ("m3u8", "m3u8_native")
+        and ".m3u8" not in f.get("url", "")
+    ]
+    if direct_combined:
+        under_1080 = [f for f in direct_combined if (f.get("height") or 0) <= 1080]
+        pool = under_1080 or direct_combined
         return [max(pool, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))]
 
     fmts = info.get("requested_formats")
     if fmts and all(isinstance(f, dict) and f.get("url") for f in fmts):
-        return fmts
+        if not any(f.get("protocol") in ("m3u8", "m3u8_native") or ".m3u8" in f.get("url", "") for f in fmts):
+            return fmts
 
-    # 2. Separate video and audio streams
-    vfmts = [f for f in formats if f.get("url") and f.get("vcodec") not in (None, "none")]
-    afmts = [f for f in formats if f.get("url") and f.get("acodec") not in (None, "none")]
+    # 2. Separate direct video and audio streams (DASH) - prioritize non-HLS HTTPS streams
+    vfmts = [
+        f for f in formats
+        if f.get("url")
+        and f.get("vcodec") not in (None, "none")
+        and f.get("protocol") not in ("m3u8", "m3u8_native")
+        and ".m3u8" not in f.get("url", "")
+    ]
+    afmts = [
+        f for f in formats
+        if f.get("url")
+        and f.get("acodec") not in (None, "none")
+        and f.get("protocol") not in ("m3u8", "m3u8_native")
+        and ".m3u8" not in f.get("url", "")
+    ]
     if vfmts and afmts:
         avc_v = [f for f in vfmts if str(f.get("vcodec", "")).startswith("avc1") and (f.get("height") or 0) <= 1080]
         v_pool = avc_v or [f for f in vfmts if (f.get("height") or 0) <= 1080] or vfmts
         best_v = max(v_pool, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))
         best_a = max(afmts, key=lambda f: (f.get("abr") or 0, f.get("tbr") or 0))
         return [best_v, best_a]
-    if vfmts:
-        return [max(vfmts, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))]
+
+    # 3. Fallback to combined HLS or any available combined stream (e.g. active live stream replay)
+    combined = [f for f in formats if f.get("url") and f.get("vcodec") not in (None, "none") and f.get("acodec") not in (None, "none")]
+    if combined:
+        under_1080 = [f for f in combined if (f.get("height") or 0) <= 1080]
+        pool = under_1080 or combined
+        return [max(pool, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))]
+
+    if fmts and all(isinstance(f, dict) and f.get("url") for f in fmts):
+        return fmts
+
+    all_v = [f for f in formats if f.get("url") and f.get("vcodec") not in (None, "none")]
+    all_a = [f for f in formats if f.get("url") and f.get("acodec") not in (None, "none")]
+    if all_v and all_a:
+        best_v = max([f for f in all_v if (f.get("height") or 0) <= 1080] or all_v, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))
+        best_a = max(all_a, key=lambda f: (f.get("abr") or 0, f.get("tbr") or 0))
+        return [best_v, best_a]
+
+    if all_v:
+        return [max(all_v, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))]
     playable = [f for f in formats if f.get("url") and f.get("protocol") != "mhtml" and (f.get("vcodec") not in (None, "none") or f.get("acodec") not in (None, "none"))]
     if playable:
         return [playable[-1]]
@@ -338,6 +377,13 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
     print(f"[DOWNLOAD_SECTION START] is_hls={is_hls} fmts_len={len(fmts)} formats={[(f.get('format_id'), f.get('protocol'), f.get('vcodec'), f.get('acodec'), f.get('url')[:60] if f.get('url') else None) for f in fmts]}", flush=True)
 
     cmd = [FFMPEG_EXE, "-y", "-v", "warning"]
+    if is_hls:
+        cmd += [
+            "-reconnect", "1",
+            "-reconnect_at_eof", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
+        ]
     for f in fmts:
         headers = dict(f.get("http_headers") or info.get("http_headers") or {})
         # Only inject Cookie header for non-HLS streams (HLS URLs already carry auth tokens in query; 6KB cookies cause 400 Bad Request on manifest servers)
@@ -374,7 +420,7 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
             nv_args += ["-gpu", str(gpu_id)]
         nv_args += ["-preset", "p4", "-rc", "vbr", "-cq", "20", "-b:v", "0"]
         candidates.append(nv_args)
-    cpu_args = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-threads", "4"]
+    cpu_args = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-threads", "2"]
     candidates.append(cpu_args)
 
     for video_args in candidates:
@@ -390,6 +436,16 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
                 os.remove(out_path)
             except OSError:
                 pass
+
+    if any(tok in last_err.lower() for tok in ("403", "forbidden", "segment", "playlist")):
+        print(f"[DOWNLOAD_SECTION] Encountered stream error ({last_err[-200:]}). Refreshing format tokens...", flush=True)
+        try:
+            fresh_info = fetch_info(source, format=VIDEO_FORMAT)
+            fresh_fmts = _resolve_stream_formats(fresh_info)
+            if fresh_fmts and [f.get("url") for f in fresh_fmts] != [f.get("url") for f in fmts]:
+                return download_section(source, start, end, out_path, info=fresh_info, gpu_id=gpu_id)
+        except Exception as retry_ex:
+            print(f"[DOWNLOAD_SECTION REFRESH FAILED] {retry_ex}", flush=True)
 
     raise RuntimeError(f"Could not download this part of the video: {last_err.strip()[-300:]}")
 

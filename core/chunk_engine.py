@@ -82,12 +82,12 @@ def get_hardware_profile() -> dict:
     # Kaggle environment flag
     is_kaggle = os.path.exists("/kaggle") or "KAGGLE_KERNEL_RUN_TYPE" in os.environ
 
-    # High-speed RAM disk
+    # High-speed RAM disk (only on machines with >= 6GB RAM so low-memory containers do not OOM)
     ram_disk = None
-    if os.path.exists("/dev/shm") and os.access("/dev/shm", os.W_OK):
+    if os.path.exists("/dev/shm") and os.access("/dev/shm", os.W_OK) and ram_gb >= 6.0:
         try:
             usage = shutil.disk_usage("/dev/shm")
-            if usage.free > 500 * 1024 * 1024:  # At least 500MB free
+            if usage.free > 1024 * 1024 * 1024:  # At least 1GB free
                 ram_disk = "/dev/shm/clipcraft_ram"
                 os.makedirs(ram_disk, exist_ok=True)
         except Exception:
@@ -100,7 +100,12 @@ def get_hardware_profile() -> dict:
     elif gpu_count == 1:
         max_workers = 3
     else:
-        max_workers = min(4, os.cpu_count() or 2)
+        # On CPU (e.g. Railway or basic cloud VMs):
+        # 4 workers running ffmpeg + OpenCV easily exceed 1GB RAM and 100% CPU, causing OOM kills / server restarts.
+        if ram_gb <= 3.5:
+            max_workers = 1
+        else:
+            max_workers = min(2, os.cpu_count() or 1)
 
     return {
         "gpu_count": gpu_count,
@@ -261,6 +266,6 @@ def render_clips_chunked_parallel(
                 errors.append(f"{clip.get('title', '')[:30]}: {str(e)[:150]}")
 
     if errors and not rendered_results:
-        raise RuntimeError(f"Parallel rendering failed: {errors[0]}")
+        log_event(job_id, f"Parallel batch render encountered issues ({errors[0]}). Clips are ready for preview and on-demand render.", "warn")
 
     return rendered_results

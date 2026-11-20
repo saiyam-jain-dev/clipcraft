@@ -192,7 +192,7 @@ def render_clip(video_path, clip, words, job_id, options, progress_callback=None
             nv_args += ["-preset", "p1" if fast_mode else "p4", "-rc", "vbr", "-cq", "23", "-b:v", "0"]
             encoding = nv_args
         else:
-            encoding = ["-c:v", "libx264", "-preset", "veryfast" if fast_mode else "fast", "-crf", "22", "-threads", "4"]
+            encoding = ["-c:v", "libx264", "-preset", "veryfast" if fast_mode else "fast", "-crf", "22", "-threads", "2"]
         code, error = _encode(base + encoding + ["-progress", "pipe:1", "-nostats", output], duration, cb)
         if code == 0:
             break

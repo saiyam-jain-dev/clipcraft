@@ -411,11 +411,21 @@ def render_all_pending(job_id: str, base_progress: float = 10.0):
         )
         try:
             from .jobs import generate_compilation_video
-            generate_compilation_video(job_id)
+            if rendered_clips and len(rendered_clips) > 0:
+                generate_compilation_video(job_id)
         except Exception:
             pass
+
+        ready_count = len(rendered_clips) if rendered_clips else 0
+        if ready_count == len(pending):
+            status_msg = f"All {ready_count} clips rendered and ready!"
+        elif ready_count > 0:
+            status_msg = f"{ready_count}/{len(pending)} clips rendered! You can preview and render remaining clips on demand."
+        else:
+            status_msg = "Moments identified! You can preview any clip instantly or render on demand."
+
         update_job(job_id, status="completed", stage="completed", progress_pct=100,
-                   status_message=f"All {len(rendered_clips)} clips rendered and ready!",
+                   status_message=status_msg,
                    completed_at=time.time())
 
     except Exception as e:
