@@ -248,15 +248,13 @@ def render_clip_endpoint(job_id, clip_id):
     job = _lookup(job_id)
     if not job:
         return _error("Project not found.", 404)
-    if job["status"] in ("queued", "processing"):
-        return _error("This project is still running.", 409)
     clip = _clip_in_job(job, clip_id)
     if not clip:
         return _error("Clip not found.", 404)
     if clip.get("video_file"):
         return jsonify(success=True, job_id=job_id, already_rendered=True)
     update_job(job_id, status="queued", stage="render", progress_pct=0,
-               status_message="Queued for render...")
+               status_message="Queued for download...")
     enqueue(job_id, render_pending_clip, clip_id)
     return jsonify(success=True, job_id=job_id)
 

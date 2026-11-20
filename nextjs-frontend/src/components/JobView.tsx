@@ -394,10 +394,10 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
               className="button button-small button-primary"
               type="button"
               onClick={handleRenderAll}
-              disabled={isBusy}
+              disabled={Object.values(renderingClips).some(Boolean)}
             >
-              <Icon name="play" />
-              Render all ({pendingClipsCount} pending)
+              <Icon name="download" />
+              Download all ({pendingClipsCount} clips)
             </button>
           )}
 
@@ -592,14 +592,20 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
                           {isRendering ? (
                             <div className="pending-badge">
                               <span className="render-spinner"></span>
-                              Rendering 9:16 clip…
+                              Preparing download…
                             </div>
                           ) : (
                             <div className="clip-pending-controls">
                               <button
                                 className="clip-play-hero-btn"
                                 type="button"
-                                onClick={() => setPreviewModalClip(clip)}
+                                onClick={() => {
+                                  if (clipYtVideoId || (typeof window !== 'undefined' && window.innerWidth <= 768)) {
+                                    setInlinePreviewClipId(inlinePreviewClipId === clip.clip_id ? null : clip.clip_id);
+                                  } else {
+                                    setPreviewModalClip(clip);
+                                  }
+                                }}
                                 title="Play instant preview with timestamps (no download needed)"
                               >
                                 <span className="play-icon-glow">
@@ -612,24 +618,15 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
                               </button>
 
                               <div className="clip-pending-subactions">
-                                {clipYtVideoId && (
-                                  <button
-                                    className="button button-quiet button-mini"
-                                    type="button"
-                                    onClick={() => setInlinePreviewClipId(clip.clip_id)}
-                                    title="Play inline inside this card"
-                                  >
-                                    Inline
-                                  </button>
-                                )}
                                 <button
                                   className="button button-primary button-mini"
                                   type="button"
                                   onClick={() => handleRenderClip(clip.clip_id)}
-                                  disabled={isBusy}
-                                  title="Render as 9:16 vertical short with captions"
+                                  disabled={isRendering}
+                                  title="Download 9:16 vertical video with captions"
                                 >
-                                  Render 9:16
+                                  <Icon name="download" />
+                                  Download Video
                                 </button>
                               </div>
                             </div>
@@ -771,7 +768,13 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
                           <button
                             className="button button-small button-preview"
                             type="button"
-                            onClick={() => setPreviewModalClip(clip)}
+                            onClick={() => {
+                              if (clipYtVideoId || (typeof window !== 'undefined' && window.innerWidth <= 768)) {
+                                setInlinePreviewClipId(inlinePreviewClipId === clip.clip_id ? null : clip.clip_id);
+                              } else {
+                                setPreviewModalClip(clip);
+                              }
+                            }}
                             title="Instant preview without downloading"
                           >
                             <Icon name="play" />
@@ -781,10 +784,11 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
                             className="button button-primary button-small"
                             type="button"
                             onClick={() => handleRenderClip(clip.clip_id)}
-                            disabled={isBusy || isRendering}
+                            disabled={isRendering}
+                            title="Download 9:16 vertical short"
                           >
-                            <Icon name="play" />
-                            {isRendering ? 'Rendering…' : 'Render 9:16'}
+                            <Icon name="download" />
+                            {isRendering ? 'Preparing…' : 'Download Video'}
                           </button>
                         </>
                       )}
@@ -1022,7 +1026,7 @@ function ClipEditor({
           }
         >
           <Icon name="refresh" />
-          {isBusy ? 'Re-rendering…' : 'Re-render with changes'}
+          {isBusy ? 'Applying…' : 'Apply & Download'}
         </button>
       </div>
     </div>

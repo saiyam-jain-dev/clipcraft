@@ -220,8 +220,8 @@ export default function PreviewModal({
                   onClick={() => onRenderClip(clip.clip_id)}
                   disabled={isRendering}
                 >
-                  <Icon name="mark" />
-                  {isRendering ? 'Rendering 9:16 Short…' : 'Render as Vertical Short'}
+                  <Icon name="download" />
+                  {isRendering ? 'Preparing download…' : 'Download 9:16 Video'}
                 </button>
               )
             )}

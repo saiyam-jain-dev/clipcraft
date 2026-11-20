@@ -599,8 +599,14 @@ def run_clipcraft_pipeline(job_id: str, source: str, options: dict):
             data["preview"] = True
             append_clip(job_id, data)
         update_job(job_id, stage="render", progress_pct=60,
-                   status_message=f"{total} moments found. Rendering all vertical clips with captions...")
-        render_all_pending(job_id, base_progress=60.0)
+                   status_message=f"{total} moments found. Ready for instant preview or download...")
+        try:
+            render_all_pending(job_id, base_progress=60.0)
+        except Exception as render_ex:
+            log_event(job_id, f"Auto-render notice: {str(render_ex)[:120]}. Clips ready for instant preview or download.", "warn")
+            update_job(job_id, status="completed", stage="completed", progress_pct=100,
+                       status_message=f"{total} moments identified! Tap Play Preview or Download Video on any clip.",
+                       completed_at=time.time())
     except Exception as e:
         traceback.print_exc()
         update_job(job_id, status="failed", error=str(e), status_message=str(e), completed_at=time.time())

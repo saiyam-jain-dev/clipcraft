@@ -391,7 +391,11 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
             headers["Cookie"] = cookie_hdr
         ua = headers.pop("User-Agent", None) or headers.pop("user-agent", None) or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         cmd += ["-user_agent", ua]
-        clean_headers = {k: v for k, v in headers.items() if k.lower() != "user-agent"}
+        clean_headers = {
+            k: v for k, v in headers.items()
+            if k.lower() not in ("user-agent", "accept", "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest")
+        }
+        clean_headers["Accept"] = "*/*"
         if clean_headers:
             cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in clean_headers.items())]
         cmd += ["-seekable", "1", "-ss", f"{start:.3f}", "-i", f["url"]]
@@ -497,7 +501,11 @@ def preview_frame(info: dict, t: float, out_path: str, source: str = None) -> st
         headers["Cookie"] = cookie_hdr
     ua = headers.pop("User-Agent", None) or headers.pop("user-agent", None) or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     cmd += ["-user_agent", ua]
-    clean_headers = {k: v for k, v in headers.items() if k.lower() != "user-agent"}
+    clean_headers = {
+        k: v for k, v in headers.items()
+        if k.lower() not in ("user-agent", "accept", "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest")
+    }
+    clean_headers["Accept"] = "*/*"
     if clean_headers:
         cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in clean_headers.items())]
     cmd += ["-seekable", "1", "-ss", f"{max(0.0, t):.3f}", "-i", vfmt["url"], "-frames:v", "1",
