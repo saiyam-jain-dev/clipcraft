@@ -167,11 +167,11 @@ def render_clips_chunked_parallel(
     rendered_results = []
     errors = []
 
-    def update_overall():
+    def update_overall(status_override=None):
         with progress_lock:
             avg_pct = sum(clip_progress.values()) / max(1, total)
             overall = round(base_progress + (99.0 - base_progress) * (avg_pct / 100.0), 1)
-            msg = f"Parallel rendering ({done_count[0]}/{total} ready) · {gpu_info}"
+            msg = status_override or f"Rendering ({done_count[0]}/{total} ready) · {gpu_info}"
             update_job(job_id, progress_pct=overall, status_message=msg)
             if progress_callback:
                 progress_callback(overall, msg)
@@ -181,10 +181,14 @@ def render_clips_chunked_parallel(
         # Shard across GPUs: even to GPU 0, odd to GPU 1
         target_gpu = (index % num_gpus) if num_gpus > 0 else None
         
+        with progress_lock:
+            clip_progress[cid] = 15.0
+        update_overall(f"Cutting clip {index + 1}/{total}: \"{clip.get('title', '')[:35]}\"...")
+
         def on_clip_prog(p, detail=None):
             with progress_lock:
-                clip_progress[cid] = min(100.0, float(p))
-            update_overall()
+                clip_progress[cid] = min(100.0, 15.0 + float(p) * 0.85)
+            update_overall(f"Encoding clip {index + 1}/{total} ({int(p)}%) · \"{clip.get('title', '')[:30]}\"")
 
         # Step 1: Ingest chunk (directly to RAM disk if available)
         chunk_file = None
@@ -243,6 +247,9 @@ def render_clips_chunked_parallel(
 
         except Exception as ex:
             log_event(job_id, f"Clip failed ({cid}): {str(ex)[:200]}", "error")
+            with progress_lock:
+                clip_progress[cid] = 100.0
+            update_overall()
             raise ex
         finally:
             # Immediate clean-up of RAM chunk to keep memory lean

@@ -139,11 +139,11 @@ def _encode(cmd, duration, callback):
                     callback(pct)
                     last = time.monotonic()
         try:
-            proc.wait(timeout=120)
+            proc.wait(timeout=300)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-            return -1, "Video rendering timed out after 120s"
+            return -1, "Video rendering timed out after 300s"
         errors.seek(0)
         return proc.returncode, errors.read()[-2000:]
 
@@ -197,7 +197,7 @@ def render_clip(video_path, clip, words, job_id, options, progress_callback=None
             nv_args += ["-preset", "p1" if fast_mode else "p4", "-rc", "vbr", "-cq", "23", "-b:v", "0"]
             encoding = nv_args
         else:
-            encoding = ["-c:v", "libx264", "-preset", "veryfast" if fast_mode else "fast", "-crf", "22", "-threads", "2"]
+            encoding = ["-c:v", "libx264", "-preset", "ultrafast" if fast_mode else "veryfast", "-crf", "23", "-threads", "0"]
         code, error = _encode(base + encoding + ["-progress", "pipe:1", "-nostats", output], duration, cb)
         if code == 0:
             break

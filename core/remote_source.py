@@ -389,8 +389,11 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
         # Only inject Cookie header for non-HLS streams (HLS URLs already carry auth tokens in query; 6KB cookies cause 400 Bad Request on manifest servers)
         if not is_hls and cookie_hdr and "Cookie" not in headers:
             headers["Cookie"] = cookie_hdr
-        if headers:
-            cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+        ua = headers.pop("User-Agent", None) or headers.pop("user-agent", None) or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        cmd += ["-user_agent", ua]
+        clean_headers = {k: v for k, v in headers.items() if k.lower() != "user-agent"}
+        if clean_headers:
+            cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in clean_headers.items())]
         cmd += ["-seekable", "1", "-ss", f"{start:.3f}", "-i", f["url"]]
     cmd += ["-t", f"{end - start:.3f}", "-map", "0:v:0", "-map", f"{len(fmts) - 1}:a:0?", "-avoid_negative_ts", "make_zero"]
 
@@ -420,7 +423,7 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
             nv_args += ["-gpu", str(gpu_id)]
         nv_args += ["-preset", "p4", "-rc", "vbr", "-cq", "20", "-b:v", "0"]
         candidates.append(nv_args)
-    cpu_args = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-threads", "2"]
+    cpu_args = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", "-threads", "0"]
     candidates.append(cpu_args)
 
     for video_args in candidates:
@@ -492,8 +495,11 @@ def preview_frame(info: dict, t: float, out_path: str, source: str = None) -> st
     headers = dict(vfmt.get("http_headers") or info.get("http_headers") or {})
     if not is_hls and cookie_hdr and "Cookie" not in headers:
         headers["Cookie"] = cookie_hdr
-    if headers:
-        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+    ua = headers.pop("User-Agent", None) or headers.pop("user-agent", None) or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    cmd += ["-user_agent", ua]
+    clean_headers = {k: v for k, v in headers.items() if k.lower() != "user-agent"}
+    if clean_headers:
+        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in clean_headers.items())]
     cmd += ["-seekable", "1", "-ss", f"{max(0.0, t):.3f}", "-i", vfmt["url"], "-frames:v", "1",
             "-vf", "scale=360:640:force_original_aspect_ratio=increase,crop=360:640",
             "-q:v", "3", out_path]
