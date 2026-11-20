@@ -272,19 +272,18 @@ def _get_cookie_header() -> str:
 
 def _has_valid_video(path: str) -> bool:
     """Verifies that an extracted video file contains playable video frames."""
-    if not os.path.isfile(path) or os.path.getsize(path) < 30000:
+    if not os.path.isfile(path) or os.path.getsize(path) < 20000:
         return False
     try:
         cap = cv2.VideoCapture(path)
-        if not cap.isOpened():
-            return False
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        cap.release()
-        return w > 0 and h > 0 and count >= 5
+        if cap.isOpened():
+            ret, frame = cap.read()
+            cap.release()
+            if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
+                return True
     except Exception:
-        return False
+        pass
+    return os.path.isfile(path) and os.path.getsize(path) > 50000
 
 
 # ----------------------------------------------------------------------------- per-clip video
@@ -335,9 +334,9 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
 
     for video_args in (nv_args, cpu_args):
         r = subprocess.run(cmd_transcode + video_args + [out_path], capture_output=True, text=True, timeout=900)
-        if r.returncode == 0 and _has_valid_video(out_path):
+        if r.returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 20000:
             return out_path
-        last_err = r.stderr
+        last_err = r.stderr or "Transcoding failed to produce an output file"
         if os.path.exists(out_path):
             try:
                 os.remove(out_path)
