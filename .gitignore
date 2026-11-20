@@ -16,6 +16,8 @@ build/
 settings.json
 .env
 .env.local
+youtube_cookies.*
+*cookies.txt
 downloads/
 outputs/
 uploads/

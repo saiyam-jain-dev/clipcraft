@@ -34,8 +34,35 @@ def _ydl_opts(**extra) -> dict:
     }
     if os.path.exists(NODE_EXE):
         opts["js_runtimes"] = {"node": {"path": NODE_EXE}}
-    if settings.get("cookies_from_browser"):
+
+    # Cookies support: Netscape cookies file (servers/Docker) or browser cookies (desktop)
+    cookie_file = settings.get("ytdlp_cookies_file") or os.getenv("YTDLP_COOKIES_FILE")
+    if not cookie_file:
+        for candidate in [
+            "/app/data/youtube_cookies.txt",
+            os.path.join(os.path.dirname(DOWNLOADS_DIR), "youtube_cookies.txt"),
+            os.path.join(DOWNLOADS_DIR, "youtube_cookies.txt"),
+        ]:
+            if os.path.isfile(candidate):
+                cookie_file = candidate
+                break
+
+    # If cookie file path is known but file doesn't exist yet, restore from base64 env var if provided
+    b64_cookies = os.getenv("YTDLP_COOKIES_B64")
+    if b64_cookies and cookie_file and not os.path.isfile(cookie_file):
+        try:
+            import base64
+            os.makedirs(os.path.dirname(os.path.abspath(cookie_file)), exist_ok=True)
+            with open(cookie_file, "wb") as f:
+                f.write(base64.b64decode(b64_cookies))
+        except Exception:
+            pass
+
+    if cookie_file:
+        opts["cookiefile"] = cookie_file
+    elif settings.get("cookies_from_browser"):
         opts["cookiesfrombrowser"] = (settings["cookies_from_browser"],)
+
     opts.update(extra)
     return opts
 
@@ -52,10 +79,29 @@ def _friendly_error(e: Exception) -> str:
     return msg[:300]
 
 
+def _extract_with_fallback(opts: dict, url: str, download: bool = False):
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=download)
+    except Exception as e:
+        msg = str(e)
+        # If cookies trigger YouTube SABR experiment ("No video formats found"), retry without cookies
+        if ("No video formats found" in msg or "Requested format is not available" in msg) and (opts.get("cookiefile") or opts.get("cookiesfrombrowser")):
+            fallback_opts = dict(opts)
+            fallback_opts.pop("cookiefile", None)
+            fallback_opts.pop("cookiesfrombrowser", None)
+            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                return ydl.extract_info(url, download=download)
+        raise
+
+
 def get_video_info(url: str) -> dict:
     try:
-        with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True)) as ydl:
-            info = ydl.extract_info(url, download=False)
+        try:
+            with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True)) as ydl:
+                info = ydl.extract_info(url, download=False, process=False)
+        except Exception:
+            info = _extract_with_fallback(_ydl_opts(skip_download=True), url, download=False)
     except Exception as e:
         raise RuntimeError(_friendly_error(e)) from e
     if info.get("_type") == "playlist":
@@ -107,8 +153,7 @@ def download_video(source: str, progress_callback=None, audio_only=False) -> dic
             progress_callback(pct, f"Downloading {'audio' if audio_only else 'video'}... {pct:.0f}%")
 
     try:
-        with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True)) as ydl:
-            info = ydl.extract_info(source, download=False)
+        info = _extract_with_fallback(_ydl_opts(skip_download=True), source, download=False)
         if info.get("is_live"):
             raise RuntimeError("Live streams cannot be clipped until the recording has finished.")
         if info.get("_type") == "playlist":
@@ -130,8 +175,7 @@ def download_video(source: str, progress_callback=None, audio_only=False) -> dic
                     outtmpl=os.path.join(DOWNLOADS_DIR, f"{cache_name}.%(ext)s"),
                     progress_hooks=[hook],
                 )
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(source, download=True)
+                info = _extract_with_fallback(opts, source, download=True)
                 path = info["requested_downloads"][0]["filepath"]
         else:
             # Full video mode
@@ -149,8 +193,7 @@ def download_video(source: str, progress_callback=None, audio_only=False) -> dic
                     outtmpl=os.path.join(DOWNLOADS_DIR, f"{cache_name}.%(ext)s"),
                     progress_hooks=[hook],
                 )
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(source, download=True)
+                info = _extract_with_fallback(opts, source, download=True)
                 path = info["requested_downloads"][0]["filepath"]
     except Exception as e:
         raise RuntimeError(_friendly_error(e)) from e

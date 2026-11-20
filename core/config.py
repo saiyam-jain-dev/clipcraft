@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 import threading
 import imageio_ffmpeg
 
@@ -19,7 +20,7 @@ for d in [UPLOADS_DIR, DOWNLOADS_DIR, OUTPUTS_DIR, JOBS_DIR]:
     os.makedirs(d, exist_ok=True)
 
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
-NODE_EXE = r"C:\Program Files\nodejs\node.exe"
+NODE_EXE = shutil.which("node") or shutil.which("nodejs") or (r"C:\Program Files\nodejs\node.exe" if os.name == "nt" else "/usr/bin/node")
 YUNET_MODEL_PATH = os.path.join(CORE_DIR, "face_detection_yunet.onnx")
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 
@@ -43,6 +44,8 @@ DEFAULT_SETTINGS = {
     "whisper_model": "small",
     # e.g. "chrome", "edge", "firefox" when YouTube asks to "confirm you're not a bot"
     "cookies_from_browser": "",
+    # Path to Netscape format cookies.txt file for yt-dlp
+    "ytdlp_cookies_file": "",
     # Oxylabs residential proxy for keyless engines (optional)
     "proxy_host": "",
     "proxy_port": "",
@@ -71,6 +74,10 @@ def load_settings() -> dict:
         data["gemini_api_key"] = os.getenv("GEMINI_API_KEY", "")
     if not data["openai_api_key"]:
         data["openai_api_key"] = os.getenv("OPENAI_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
+    if "COOKIES_FROM_BROWSER" in os.environ:
+        data["cookies_from_browser"] = os.environ.get("COOKIES_FROM_BROWSER", "")
+    if "YTDLP_COOKIES_FILE" in os.environ:
+        data["ytdlp_cookies_file"] = os.environ.get("YTDLP_COOKIES_FILE", "")
     return data
 
 
