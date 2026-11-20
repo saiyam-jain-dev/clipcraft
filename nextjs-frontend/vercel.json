@@ -28,19 +28,19 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "https://YOUR_BACKEND_URL/api/$1"
+      "destination": "https://clipcraft-production-d672f3fd.up.railway.app/api/$1"
     },
     {
       "source": "/video/(.*)",
-      "destination": "https://YOUR_BACKEND_URL/video/$1"
+      "destination": "https://clipcraft-production-d672f3fd.up.railway.app/video/$1"
     },
     {
       "source": "/media/(.*)",
-      "destination": "https://YOUR_BACKEND_URL/media/$1"
+      "destination": "https://clipcraft-production-d672f3fd.up.railway.app/media/$1"
     },
     {
       "source": "/download/(.*)",
-      "destination": "https://YOUR_BACKEND_URL/download/$1"
+      "destination": "https://clipcraft-production-d672f3fd.up.railway.app/download/$1"
     }
   ]
 }
