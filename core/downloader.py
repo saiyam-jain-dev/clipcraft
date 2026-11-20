@@ -33,6 +33,7 @@ def _ydl_opts(**extra) -> dict:
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
+        "ignore_no_formats_error": True,
         "ffmpeg_location": ffmpeg_dir(),
         "extractor_args": {
             "youtube": {
