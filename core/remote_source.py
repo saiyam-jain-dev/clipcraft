@@ -336,7 +336,8 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
         r = subprocess.run(cmd_transcode + video_args + [out_path], capture_output=True, text=True, timeout=900)
         if r.returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 20000:
             return out_path
-        last_err = r.stderr or "Transcoding failed to produce an output file"
+        last_err = (r.stderr or "").strip() or "Transcoding failed to produce an output file"
+        print(f"[TRANSCODE DEBUG] encoder={video_args[1]} code={r.returncode} size={os.path.getsize(out_path) if os.path.exists(out_path) else 0} err={last_err[-250:]}", flush=True)
         if os.path.exists(out_path):
             try:
                 os.remove(out_path)

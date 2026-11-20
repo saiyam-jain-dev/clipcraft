@@ -19,7 +19,7 @@ JOBS_DIR = os.path.join(BASE_DIR, "jobs")
 for d in [UPLOADS_DIR, DOWNLOADS_DIR, OUTPUTS_DIR, JOBS_DIR]:
     os.makedirs(d, exist_ok=True)
 
-FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
+FFMPEG_EXE = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
 NODE_EXE = shutil.which("node") or shutil.which("nodejs") or (r"C:\Program Files\nodejs\node.exe" if os.name == "nt" else "/usr/bin/node")
 YUNET_MODEL_PATH = os.path.join(CORE_DIR, "face_detection_yunet.onnx")
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
