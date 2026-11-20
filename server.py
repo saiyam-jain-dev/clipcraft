@@ -536,10 +536,18 @@ def test_remote_worker_endpoint():
     return jsonify(success=True, **res)
 
 
-@app.get("/api/hardware")
-def hardware_endpoint():
-    from core.chunk_engine import get_hardware_profile
-    return jsonify(get_hardware_profile())
+@app.get("/api/cli-test")
+def cli_test_endpoint():
+    url = request.args.get("url", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    cmd = ["yt-dlp", "--cookies", "/tmp/youtube_cookies.txt", "-F", "--verbose", url]
+    import subprocess
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    return jsonify({
+        "cmd": cmd,
+        "returncode": r.returncode,
+        "stdout": r.stdout[-3000:],
+        "stderr": r.stderr[-3000:]
+    })
 
 
 @app.get("/api/test-formats")
