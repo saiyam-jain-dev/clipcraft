@@ -122,6 +122,15 @@ def _extract_with_fallback(opts: dict, url: str, download: bool = False):
             fallback_opts = dict(opts)
             fallback_opts.pop("cookiefile", None)
             fallback_opts.pop("cookiesfrombrowser", None)
+            fallback_opts.pop("format", None)
+            try:
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    return ydl.extract_info(url, download=download)
+            except Exception:
+                pass
+        if "Requested format is not available" in msg and opts.get("format"):
+            fallback_opts = dict(opts)
+            fallback_opts.pop("format", None)
             with yt_dlp.YoutubeDL(fallback_opts) as ydl:
                 return ydl.extract_info(url, download=download)
         raise

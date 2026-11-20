@@ -11,7 +11,7 @@ import requests
 import yt_dlp
 from yt_dlp.utils import download_range_func
 from .config import DOWNLOADS_DIR, FFMPEG_EXE
-from .downloader import _ydl_opts, _friendly_error
+from .downloader import _ydl_opts, _friendly_error, _extract_with_fallback
 
 # H.264 first (OpenCV face tracking can't reliably decode AV1 on Windows); 30 fps is plenty for Shorts.
 VIDEO_FORMAT = ("bv*[height<=1080][fps<=30][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][fps<=30]+ba/"
@@ -21,18 +21,13 @@ VIDEO_FORMAT = ("bv*[height<=1080][fps<=30][vcodec^=avc1]+ba[ext=m4a]/bv*[height
 def fetch_info(source: str, **extra) -> dict:
     extra.pop("format", None)  # Never restrict metadata extraction so all stream formats are resolved
     process = extra.pop("process", None)
-    if process is None:
-        try:
-            with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, **extra)) as ydl:
-                info = ydl.extract_info(source, download=False)
-        except Exception as e:
-            raise RuntimeError(_friendly_error(e)) from e
-    else:
-        try:
-            with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, **extra)) as ydl:
-                info = ydl.extract_info(source, download=False, process=process)
-        except Exception as e:
-            raise RuntimeError(_friendly_error(e)) from e
+    opts = _ydl_opts(skip_download=True, **extra)
+    if process is not None:
+        opts["extract_flat"] = not process
+    try:
+        info = _extract_with_fallback(opts, source, download=False)
+    except Exception as e:
+        raise RuntimeError(_friendly_error(e)) from e
 
     if info.get("is_live"):
         raise RuntimeError("Live streams cannot be clipped until the recording has finished.")
