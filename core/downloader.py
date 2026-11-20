@@ -41,29 +41,42 @@ def _ydl_opts(**extra) -> dict:
         opts["js_runtimes"] = {"node": {}}
 
     # Cookies support: Netscape cookies file (servers/Docker) or browser cookies (desktop)
+    b64_cookies = os.getenv("YTDLP_COOKIES_B64")
     cookie_file = settings.get("ytdlp_cookies_file") or os.getenv("YTDLP_COOKIES_FILE")
-    if not cookie_file:
+
+    if b64_cookies:
+        # Prefer writing to /tmp/youtube_cookies.txt which is universally writable on all Linux/Docker/Windows
+        for target in [
+            cookie_file,
+            "/tmp/youtube_cookies.txt",
+            os.path.join(DOWNLOADS_DIR, "youtube_cookies.txt"),
+        ]:
+            if not target:
+                continue
+            try:
+                if not os.path.isfile(target) or os.path.getsize(target) < 100:
+                    import base64
+                    os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
+                    with open(target, "wb") as f:
+                        f.write(base64.b64decode(b64_cookies))
+                if os.path.isfile(target) and os.path.getsize(target) >= 100:
+                    cookie_file = target
+                    break
+            except Exception:
+                continue
+
+    if not cookie_file or not os.path.isfile(cookie_file):
         for candidate in [
             "/app/data/youtube_cookies.txt",
+            "/tmp/youtube_cookies.txt",
             os.path.join(os.path.dirname(DOWNLOADS_DIR), "youtube_cookies.txt"),
             os.path.join(DOWNLOADS_DIR, "youtube_cookies.txt"),
         ]:
-            if os.path.isfile(candidate):
+            if os.path.isfile(candidate) and os.path.getsize(candidate) >= 100:
                 cookie_file = candidate
                 break
 
-    # If cookie file path is known but file doesn't exist yet, restore from base64 env var if provided
-    b64_cookies = os.getenv("YTDLP_COOKIES_B64")
-    if b64_cookies and cookie_file and not os.path.isfile(cookie_file):
-        try:
-            import base64
-            os.makedirs(os.path.dirname(os.path.abspath(cookie_file)), exist_ok=True)
-            with open(cookie_file, "wb") as f:
-                f.write(base64.b64decode(b64_cookies))
-        except Exception:
-            pass
-
-    if cookie_file:
+    if cookie_file and os.path.isfile(cookie_file) and os.path.getsize(cookie_file) >= 100:
         opts["cookiefile"] = cookie_file
     elif settings.get("cookies_from_browser"):
         opts["cookiesfrombrowser"] = (settings["cookies_from_browser"],)

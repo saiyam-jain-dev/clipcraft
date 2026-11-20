@@ -225,13 +225,12 @@ def _resolve_stream_formats(info: dict) -> list:
         return [best_v, best_a]
     if vfmts:
         return [max(vfmts, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))]
-    if formats:
-        with_url = [f for f in formats if f.get("url")]
-        if with_url:
-            return [with_url[-1]]
+    playable = [f for f in formats if f.get("url") and f.get("protocol") != "mhtml" and (f.get("vcodec") not in (None, "none") or f.get("acodec") not in (None, "none"))]
+    if playable:
+        return [playable[-1]]
     if "url" in info:
         return [info]
-    raise RuntimeError("Could not find playable stream format URLs for this video.")
+    raise RuntimeError("Could not find playable video streams for this video (YouTube returned bot verification or format restriction).")
 
 
 def _get_cookie_header() -> str:
@@ -246,11 +245,12 @@ def _get_cookie_header() -> str:
         pass
     if not cookie_file:
         for candidate in [
+            "/tmp/youtube_cookies.txt",
             "/app/data/youtube_cookies.txt",
             os.path.join(os.path.dirname(DOWNLOADS_DIR), "youtube_cookies.txt"),
             os.path.join(DOWNLOADS_DIR, "youtube_cookies.txt"),
         ]:
-            if os.path.isfile(candidate):
+            if os.path.isfile(candidate) and os.path.getsize(candidate) >= 100:
                 cookie_file = candidate
                 break
     if not cookie_file:
