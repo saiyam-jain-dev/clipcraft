@@ -40,7 +40,21 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
   const checkStatus = async () => {
     try {
       setLoading(true);
-      const res = await apiClient.youtubeAuthStatus();
+      let res = await apiClient.youtubeAuthStatus();
+
+      // If server does not have the token in disk (e.g. after container redeploy), restore from localStorage!
+      if (!res.authenticated && typeof window !== 'undefined') {
+        try {
+          const savedToken = localStorage.getItem('clipcraft_youtube_token');
+          if (savedToken) {
+            const restored = await apiClient.youtubeRestoreToken(JSON.parse(savedToken));
+            if (restored.authenticated) {
+              res = await apiClient.youtubeAuthStatus();
+            }
+          }
+        } catch (e) {}
+      }
+
       setAuthenticated(Boolean(res.authenticated));
       setConfigured(Boolean(res.configured));
       setChannel(res.channel || null);
@@ -60,12 +74,20 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
     checkStatus();
 
     // Listen for OAuth completion message from popup
-    const handleMessage = (event: MessageEvent) => {
+    const handleMessage = async (event: MessageEvent) => {
       if (event.data?.type === 'YOUTUBE_AUTH_SUCCESS') {
         setAuthenticated(true);
         setAuthenticating(false);
         setSuccessMsg('YouTube channel connected successfully!');
-        checkStatus();
+        if (event.data?.channel) {
+          setChannel(event.data.channel);
+        }
+        if (event.data?.token) {
+          try {
+            localStorage.setItem('clipcraft_youtube_token', JSON.stringify(event.data.token));
+          } catch (e) {}
+        }
+        await checkStatus();
       } else if (event.data?.type === 'YOUTUBE_AUTH_ERROR') {
         setAuthenticating(false);
         setError(event.data?.error || 'Authentication failed');
@@ -154,6 +176,9 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
   const handleDisconnect = async () => {
     if (!confirm('Are you sure you want to disconnect this YouTube channel?')) return;
     try {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('clipcraft_youtube_token');
+      }
       await apiClient.youtubeDisconnect();
       setAuthenticated(false);
       setChannel(null);

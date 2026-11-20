@@ -110,21 +110,33 @@ def get_youtube_service():
         return None
 
     try:
-        credentials = google.oauth2.credentials.Credentials.from_authorized_user_info(token_data, scopes=SCOPES)
         creds_info = get_client_credentials() or {}
         client_id = creds_info.get("client_id") or token_data.get("client_id")
         client_secret = creds_info.get("client_secret") or token_data.get("client_secret")
+        access_token = token_data.get("access_token") or token_data.get("token")
+        refresh_token = token_data.get("refresh_token")
+
+        if not access_token and not refresh_token:
+            return None
+
+        credentials = google.oauth2.credentials.Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=SCOPES
+        )
 
         if credentials.expired and credentials.refresh_token:
-            if client_id and client_secret:
-                credentials.client_id = client_id
-                credentials.client_secret = client_secret
             credentials.refresh(GoogleRequest())
             # Save refreshed token
             try:
+                token_data["access_token"] = credentials.token
+                token_data["token"] = credentials.token
                 os.makedirs(os.path.dirname(token_file), exist_ok=True)
                 with open(token_file, "w", encoding="utf-8") as f:
-                    f.write(credentials.to_json())
+                    json.dump(token_data, f, indent=2)
             except Exception:
                 pass
 
@@ -179,6 +191,8 @@ def exchange_code_for_token(code: str, redirect_uri: str) -> dict:
     token_data = resp.json()
     token_data["client_id"] = client_id
     token_data["client_secret"] = client_secret
+    if "access_token" in token_data and "token" not in token_data:
+        token_data["token"] = token_data["access_token"]
 
     token_file = get_youtube_token_file()
     os.makedirs(os.path.dirname(token_file), exist_ok=True)

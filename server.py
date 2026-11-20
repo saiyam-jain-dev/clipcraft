@@ -555,6 +555,18 @@ def youtube_oauth2_callback():
         """, 400
 
     frontend = os.environ.get("FRONTEND_URL", "https://clipcraft-theta.vercel.app")
+    token_file = get_youtube_token_file()
+    token_data = {}
+    if os.path.isfile(token_file):
+        try:
+            with open(token_file, "r", encoding="utf-8") as f:
+                token_data = json.load(f)
+        except Exception:
+            token_data = {}
+    channel = get_channel_profile()
+    token_json_str = json.dumps(token_data)
+    channel_json_str = json.dumps(channel or {})
+
     return f"""
     <!DOCTYPE html>
     <html>
@@ -578,8 +590,14 @@ def youtube_oauth2_callback():
           <a href="{frontend}/?youtube_connected=true">Continue to Studio &rarr;</a>
         </div>
         <script>
+          const payload = {{
+            type: 'YOUTUBE_AUTH_SUCCESS',
+            token: {token_json_str},
+            channel: {channel_json_str}
+          }};
+          try {{ localStorage.setItem('clipcraft_youtube_token', JSON.stringify({token_json_str})); }} catch(e){{}}
           if (window.opener) {{
-            try {{ window.opener.postMessage({{ type: 'YOUTUBE_AUTH_SUCCESS' }}, '*'); }} catch(e){{}}
+            try {{ window.opener.postMessage(payload, '*'); }} catch(e){{}}
             setTimeout(function() {{ window.close(); }}, 1800);
           }} else {{
             setTimeout(function() {{ window.location.href = '{frontend}/?youtube_connected=true'; }}, 1800);
@@ -620,6 +638,30 @@ def youtube_exchange_code():
             if "redirect_uri_mismatch" not in last_err.lower():
                 break
     return _error(f"Failed to exchange code: {last_err}")
+
+
+@app.post("/api/youtube/restore-token")
+def youtube_restore_token():
+    data = request.get_json(silent=True) or {}
+    token_data = data.get("token") or data
+    if not isinstance(token_data, dict) or not (token_data.get("access_token") or token_data.get("token") or token_data.get("refresh_token")):
+        return _error("Valid token data required.")
+
+    creds = get_client_credentials() or {}
+    if "client_id" not in token_data and creds.get("client_id"):
+        token_data["client_id"] = creds["client_id"]
+    if "client_secret" not in token_data and creds.get("client_secret"):
+        token_data["client_secret"] = creds["client_secret"]
+    if "access_token" in token_data and "token" not in token_data:
+        token_data["token"] = token_data["access_token"]
+
+    token_file = get_youtube_token_file()
+    os.makedirs(os.path.dirname(token_file), exist_ok=True)
+    with open(token_file, "w", encoding="utf-8") as f:
+        json.dump(token_data, f, indent=2)
+
+    channel = get_channel_profile()
+    return jsonify(success=True, authenticated=channel is not None, channel=channel)
 
 
 @app.post("/api/youtube/disconnect")

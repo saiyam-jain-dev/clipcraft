@@ -188,6 +188,13 @@ export const apiClient = {
   youtubeDisconnect: () =>
     api<{ success: boolean; message: string }>('/api/youtube/disconnect', { method: 'POST' }),
 
+  youtubeRestoreToken: (token: any) =>
+    api<{ success: boolean; authenticated: boolean; channel?: any }>('/api/youtube/restore-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    }),
+
   uploadToYoutube: (
     jobId: string,
     clipId: string,
