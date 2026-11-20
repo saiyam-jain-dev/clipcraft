@@ -561,4 +561,4 @@ if __name__ == "__main__":
             print(f"[queue] Resuming queued project {j['job_id']}: {j.get('source_label', j['source'])}")
             enqueue(j["job_id"], run_clipcraft_pipeline, j["source"], j.get("options", {}))
             break
-    app.run(host="127.0.0.1", port=int(os.getenv("CLIPCRAFT_PORT", "5004")), debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("CLIPCRAFT_PORT", "5004")), debug=False, threaded=True)
