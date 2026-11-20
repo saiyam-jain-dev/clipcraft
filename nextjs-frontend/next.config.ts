@@ -5,6 +5,7 @@ const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:5004';
 
 const nextConfig: NextConfig = {
   // Only use rewrites in development for local backend proxy
+  // In production (Vercel), use vercel.json rewrites instead
   async rewrites() {
     if (!isDev) return [];
     return [

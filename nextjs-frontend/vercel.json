@@ -1,0 +1,46 @@
+{
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "framework": "nextjs",
+  "regions": ["iad1"],
+  "functions": {
+    "src/app/**/*.tsx": {
+      "maxDuration": 30
+    }
+  },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+      ]
+    },
+    {
+      "source": "/_next/static/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://YOUR_BACKEND_URL/api/$1"
+    },
+    {
+      "source": "/video/(.*)",
+      "destination": "https://YOUR_BACKEND_URL/video/$1"
+    },
+    {
+      "source": "/media/(.*)",
+      "destination": "https://YOUR_BACKEND_URL/media/$1"
+    },
+    {
+      "source": "/download/(.*)",
+      "destination": "https://YOUR_BACKEND_URL/download/$1"
+    }
+  ]
+}
