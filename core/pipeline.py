@@ -264,7 +264,7 @@ def _preview_frames(job_id, source, video_path, clips, src_info):
             if video_path:
                 grab_thumbnail(video_path, mid, path)
             elif src_info:
-                remote.preview_frame(src_info, mid, path)
+                remote.preview_frame(src_info, mid, path, source=source)
             else:
                 return None
         except Exception as e:

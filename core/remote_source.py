@@ -27,7 +27,9 @@ def fetch_info(source: str, **extra) -> dict:
         except Exception as e:
             msg = str(e)
             if "Requested format is not available" in msg or "No video formats found" in msg:
-                with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, **extra)) as ydl:
+                fallback_extra = dict(extra)
+                fallback_extra.pop("format", None)
+                with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, **fallback_extra)) as ydl:
                     info = ydl.extract_info(source, download=False, process=False)
             else:
                 raise RuntimeError(_friendly_error(e)) from e
@@ -289,12 +291,19 @@ def _has_valid_video(path: str) -> bool:
 # ----------------------------------------------------------------------------- per-clip video
 def download_section(source: str, start: float, end: float, out_path: str, info: dict = None, gpu_id: int = None) -> str:
     """Frame-accurate cut of [start, end] straight from the stream URLs (HTTP range seeks, no full download)."""
-    if info is None:
+    fmts = []
+    if info:
+        try:
+            fmts = _resolve_stream_formats(info)
+        except Exception:
+            fmts = []
+    if not fmts:
         try:
             info = fetch_info(source, format=VIDEO_FORMAT)
+            fmts = _resolve_stream_formats(info)
         except Exception:
             info = fetch_info(source, format="best/b")
-    fmts = _resolve_stream_formats(info)
+            fmts = _resolve_stream_formats(info)
     is_hls = any(f.get("protocol") in ("m3u8", "m3u8_native") or ".m3u8" in f.get("url", "") for f in fmts)
     cookie_hdr = _get_cookie_header()
     print(f"[DOWNLOAD_SECTION START] is_hls={is_hls} fmts_len={len(fmts)} formats={[(f.get('format_id'), f.get('protocol'), f.get('vcodec'), f.get('acodec'), f.get('url')[:60] if f.get('url') else None) for f in fmts]}", flush=True)
@@ -373,9 +382,17 @@ def download_lowres_section(source: str, start: float, end: float, out_path: str
     return res["requested_downloads"][0]["filepath"]
 
 
-def preview_frame(info: dict, t: float, out_path: str) -> str:
+def preview_frame(info: dict, t: float, out_path: str, source: str = None) -> str:
     """One frame at time `t` pulled straight from the stream (HTTP range seek) — no clip download."""
-    fmts = _resolve_stream_formats(info)
+    try:
+        fmts = _resolve_stream_formats(info)
+    except Exception:
+        url = source or info.get("webpage_url") or info.get("original_url")
+        if url:
+            info = fetch_info(url)
+            fmts = _resolve_stream_formats(info)
+        else:
+            raise
     vfmt = next((f for f in fmts if f.get("vcodec") not in (None, "none")), fmts[0])
     is_hls = any(f.get("protocol") in ("m3u8", "m3u8_native") or ".m3u8" in f.get("url", "") for f in fmts)
     cookie_hdr = _get_cookie_header()

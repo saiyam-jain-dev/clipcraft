@@ -36,7 +36,7 @@ def _ydl_opts(**extra) -> dict:
         "ffmpeg_location": ffmpeg_dir(),
         "extractor_args": {
             "youtube": {
-                "player_client": ["tv_embedded", "android_creator"]
+                "player_client": ["web_embedded", "tv_samsung", "web", "mweb"]
             }
         },
     }
@@ -52,18 +52,18 @@ def _ydl_opts(**extra) -> dict:
     if b64_cookies:
         # Prefer writing to /tmp/youtube_cookies.txt which is universally writable on all Linux/Docker/Windows
         for target in [
-            cookie_file,
             "/tmp/youtube_cookies.txt",
+            cookie_file,
+            "/app/data/youtube_cookies.txt",
             os.path.join(DOWNLOADS_DIR, "youtube_cookies.txt"),
         ]:
             if not target:
                 continue
             try:
-                if not os.path.isfile(target) or os.path.getsize(target) < 100:
-                    import base64
-                    os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
-                    with open(target, "wb") as f:
-                        f.write(base64.b64decode(b64_cookies))
+                import base64
+                os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
+                with open(target, "wb") as f:
+                    f.write(base64.b64decode(b64_cookies))
                 if os.path.isfile(target) and os.path.getsize(target) >= 100:
                     cookie_file = target
                     break
