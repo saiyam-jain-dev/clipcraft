@@ -5,6 +5,7 @@ import re
 import glob
 import shutil
 import subprocess
+import cv2
 import numpy as np
 import requests
 import yt_dlp
@@ -199,20 +200,27 @@ def loud_windows(profile: dict, count: int, length: float) -> list:
 
 
 def _resolve_stream_formats(info: dict) -> list:
-    """Safely extracts valid stream URLs whether info came from process=True or process=False."""
-    fmts = info.get("requested_formats")
-    if fmts and all(isinstance(f, dict) and f.get("url") for f in fmts):
-        return fmts
+    """Safely extracts valid stream URLs whether info came from process=True or process=False.
+    Prefers synchronized combined H.264/HLS streams (like format 301/300/18) that seek reliably."""
     formats = info.get("formats") or []
     # 1. Combined audio+video format (e.g. 1080p m3u8 format 301 or progressive 720p format 18/22)
     combined = [f for f in formats if f.get("url") and f.get("vcodec") not in (None, "none") and f.get("acodec") not in (None, "none")]
     if combined:
-        return [max(combined, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))]
+        under_1080 = [f for f in combined if (f.get("height") or 0) <= 1080]
+        pool = under_1080 or combined
+        return [max(pool, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))]
+
+    fmts = info.get("requested_formats")
+    if fmts and all(isinstance(f, dict) and f.get("url") for f in fmts):
+        return fmts
+
     # 2. Separate video and audio streams
     vfmts = [f for f in formats if f.get("url") and f.get("vcodec") not in (None, "none")]
     afmts = [f for f in formats if f.get("url") and f.get("acodec") not in (None, "none")]
     if vfmts and afmts:
-        best_v = max(vfmts, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))
+        avc_v = [f for f in vfmts if str(f.get("vcodec", "")).startswith("avc1") and (f.get("height") or 0) <= 1080]
+        v_pool = avc_v or [f for f in vfmts if (f.get("height") or 0) <= 1080] or vfmts
+        best_v = max(v_pool, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))
         best_a = max(afmts, key=lambda f: (f.get("abr") or 0, f.get("tbr") or 0))
         return [best_v, best_a]
     if vfmts:
@@ -226,6 +234,59 @@ def _resolve_stream_formats(info: dict) -> list:
     raise RuntimeError("Could not find playable stream format URLs for this video.")
 
 
+def _get_cookie_header() -> str:
+    """Extracts a 'Cookie: name=value; ...' string from the configured yt-dlp cookies file."""
+    cookie_file = None
+    try:
+        from .downloader import _ydl_opts
+        opts = _ydl_opts()
+        if opts.get("cookiefile") and os.path.isfile(opts["cookiefile"]):
+            cookie_file = opts["cookiefile"]
+    except Exception:
+        pass
+    if not cookie_file:
+        for candidate in [
+            "/app/data/youtube_cookies.txt",
+            os.path.join(os.path.dirname(DOWNLOADS_DIR), "youtube_cookies.txt"),
+            os.path.join(DOWNLOADS_DIR, "youtube_cookies.txt"),
+        ]:
+            if os.path.isfile(candidate):
+                cookie_file = candidate
+                break
+    if not cookie_file:
+        return ""
+    try:
+        cookies = []
+        with open(cookie_file, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 7:
+                    cookies.append(f"{parts[5]}={parts[6]}")
+        return "; ".join(cookies)
+    except Exception:
+        return ""
+
+
+def _has_valid_video(path: str) -> bool:
+    """Verifies that an extracted video file contains playable video frames."""
+    if not os.path.isfile(path) or os.path.getsize(path) < 30000:
+        return False
+    try:
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return False
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        cap.release()
+        return w > 0 and h > 0 and count >= 5
+    except Exception:
+        return False
+
+
 # ----------------------------------------------------------------------------- per-clip video
 def download_section(source: str, start: float, end: float, out_path: str, info: dict = None, gpu_id: int = None) -> str:
     """Frame-accurate cut of [start, end] straight from the stream URLs (HTTP range seeks, no full download)."""
@@ -235,37 +296,54 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
         except Exception:
             info = fetch_info(source, format="best/b")
     fmts = _resolve_stream_formats(info)
+    is_hls = any(f.get("protocol") in ("m3u8", "m3u8_native") or ".m3u8" in f.get("url", "") for f in fmts)
+    cookie_hdr = _get_cookie_header()
+
     cmd = [FFMPEG_EXE, "-y", "-v", "error"]
     for f in fmts:
-        headers = f.get("http_headers") or info.get("http_headers") or {}
+        headers = dict(f.get("http_headers") or info.get("http_headers") or {})
+        if cookie_hdr and "Cookie" not in headers:
+            headers["Cookie"] = cookie_hdr
         if headers:
             cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
         cmd += ["-ss", f"{start:.3f}", "-i", f["url"]]
-    cmd += ["-t", f"{end - start:.3f}", "-map", "0:v:0", "-map", f"{len(fmts) - 1}:a:0?"]
-    # Fast path: instant stream copy (0.2s instead of 10s transcode)
-    try:
-        r_copy = subprocess.run(cmd + ["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", out_path],
-                                capture_output=True, text=True, timeout=30)
-        if r_copy.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 10000:
-            return out_path
-    except Exception:
-        pass
+    cmd += ["-t", f"{end - start:.3f}", "-map", "0:v:0", "-map", f"{len(fmts) - 1}:a:0?", "-avoid_negative_ts", "make_zero"]
 
-    # Fallback to NVENC or libx264 transcode if stream copy fails
+    # Only attempt stream copy on direct non-HLS streams; HLS requires re-encoding to avoid broken timestamps / 0 frames
+    if not is_hls:
+        try:
+            r_copy = subprocess.run(cmd + ["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", out_path],
+                                    capture_output=True, text=True, timeout=30)
+            if r_copy.returncode == 0 and _has_valid_video(out_path):
+                return out_path
+        except Exception:
+            pass
+        if os.path.exists(out_path):
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+
+    # Fallback to NVENC (if GPU available) or ultrafast libx264 CPU transcode
     cmd_transcode = cmd + ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]
     last_err = ""
     nv_args = ["-c:v", "h264_nvenc"]
     if gpu_id is not None:
         nv_args += ["-gpu", str(gpu_id)]
     nv_args += ["-preset", "p4", "-rc", "vbr", "-cq", "20", "-b:v", "0"]
+    cpu_args = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-threads", "4"]
 
-    for video_args in (nv_args, ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]):
+    for video_args in (nv_args, cpu_args):
         r = subprocess.run(cmd_transcode + video_args + [out_path], capture_output=True, text=True, timeout=900)
-        if r.returncode == 0 and os.path.exists(out_path):
+        if r.returncode == 0 and _has_valid_video(out_path):
             return out_path
         last_err = r.stderr
-        if "nvenc" not in last_err.lower():
-            break
+        if os.path.exists(out_path):
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+
     raise RuntimeError(f"Could not download this part of the video: {last_err.strip()[-300:]}")
 
 
@@ -290,8 +368,11 @@ def preview_frame(info: dict, t: float, out_path: str) -> str:
     """One frame at time `t` pulled straight from the stream (HTTP range seek) — no clip download."""
     fmts = _resolve_stream_formats(info)
     vfmt = next((f for f in fmts if f.get("vcodec") not in (None, "none")), fmts[0])
+    cookie_hdr = _get_cookie_header()
     cmd = [FFMPEG_EXE, "-y", "-v", "error", "-ss", f"{max(0.0, t):.3f}"]
-    headers = vfmt.get("http_headers") or info.get("http_headers") or {}
+    headers = dict(vfmt.get("http_headers") or info.get("http_headers") or {})
+    if cookie_hdr and "Cookie" not in headers:
+        headers["Cookie"] = cookie_hdr
     if headers:
         cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
     cmd += ["-i", vfmt["url"], "-frames:v", "1",

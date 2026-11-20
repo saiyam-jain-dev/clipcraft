@@ -196,7 +196,7 @@ def render_clip(video_path, clip, words, job_id, options, progress_callback=None
         code, error = _encode(base + encoding + ["-progress", "pipe:1", "-nostats", output], duration, cb)
         if code == 0:
             break
-        if encoder == "h264_nvenc" and "nvenc" in error.lower():
+        if encoder == "h264_nvenc" and attempt == 0:
             encoder = _encoder = "libx264"
         else:
             raise RuntimeError(f"Video render failed: {error.strip()[-600:]}")

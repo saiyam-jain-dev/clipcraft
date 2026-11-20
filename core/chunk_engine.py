@@ -147,7 +147,16 @@ def render_clips_chunked_parallel(
     update_job(job_id, status_message=f"Starting parallel render: {gpu_info}")
 
     video_path = source if os.path.isfile(source) else None
-    src_info = None if video_path else remote.fetch_info(source, format=remote.VIDEO_FORMAT)
+    if video_path:
+        src_info = None
+    else:
+        try:
+            src_info = remote.fetch_info(source, format=remote.VIDEO_FORMAT)
+        except Exception:
+            try:
+                src_info = remote.fetch_info(source, format="best/b")
+            except Exception:
+                src_info = remote.fetch_info(source)
 
     total = len(clips)
     done_count = [0]
