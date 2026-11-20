@@ -86,8 +86,14 @@ def probe_video(path: str) -> dict:
     return {"fps": fps, "duration": frames / fps if fps else 0, "width": w, "height": h}
 
 
-def download_video(source: str, progress_callback=None) -> dict:
-    """Downloads a URL (or accepts a local file). Returns path + metadata. Downloads are cached by video id."""
+def download_video(source: str, progress_callback=None, audio_only=False) -> dict:
+    """Downloads a URL (or accepts a local file). Returns path + metadata. Downloads are cached by video id.
+    
+    Args:
+        source: Video URL or local file path
+        progress_callback: Optional callback(progress_pct, message)
+        audio_only: If True, download only audio (much faster for long videos)
+    """
     if os.path.isfile(source):
         title = os.path.splitext(os.path.basename(source))[0]
         title = re.sub(r"^[0-9a-f]{8}_", "", title)
@@ -98,7 +104,7 @@ def download_video(source: str, progress_callback=None) -> dict:
         if d.get("status") == "downloading" and progress_callback:
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             pct = (d.get("downloaded_bytes", 0) / total * 100) if total else 0
-            progress_callback(pct, f"Downloading video... {pct:.0f}%")
+            progress_callback(pct, f"Downloading {'audio' if audio_only else 'video'}... {pct:.0f}%")
 
     try:
         with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True)) as ydl:
@@ -110,26 +116,60 @@ def download_video(source: str, progress_callback=None) -> dict:
         vid = re.sub(r"[^A-Za-z0-9_-]", "", info.get("id") or "video")
         extractor = re.sub(r"[^a-z0-9_-]", "", (info.get("extractor_key") or info.get("extractor") or "generic").lower())
         cache_name = f"src_{extractor}_{vid}"
-        cached = [p for p in glob.glob(os.path.join(DOWNLOADS_DIR, f"{cache_name}.*")) if p.endswith(".mp4")]
-        if cached:
-            path = cached[0]
-            if progress_callback:
-                progress_callback(100, "Using cached download...")
+        
+        if audio_only:
+            # Audio-only mode: download only the audio track
+            audio_cached = [p for p in glob.glob(os.path.join(DOWNLOADS_DIR, f"{cache_name}.m4a"))]
+            if audio_cached:
+                path = audio_cached[0]
+                if progress_callback:
+                    progress_callback(100, "Using cached audio...")
+            else:
+                opts = _ydl_opts(
+                    format="bestaudio/best",
+                    outtmpl=os.path.join(DOWNLOADS_DIR, f"{cache_name}.%(ext)s"),
+                    progress_hooks=[hook],
+                )
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(source, download=True)
+                path = info["requested_downloads"][0]["filepath"]
         else:
-            opts = _ydl_opts(
-                # H.264 first: OpenCV (used for face tracking) can't reliably decode AV1 on Windows.
-                format="bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][vcodec^=avc1]+ba/"
-                       "bv*[height<=1080]+ba/b[height<=1080]/b",
-                merge_output_format="mp4",
-                outtmpl=os.path.join(DOWNLOADS_DIR, f"{cache_name}.%(ext)s"),
-                progress_hooks=[hook],
-            )
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(source, download=True)
-            path = info["requested_downloads"][0]["filepath"]
+            # Full video mode
+            cached = [p for p in glob.glob(os.path.join(DOWNLOADS_DIR, f"{cache_name}.*")) if p.endswith(".mp4")]
+            if cached:
+                path = cached[0]
+                if progress_callback:
+                    progress_callback(100, "Using cached download...")
+            else:
+                opts = _ydl_opts(
+                    # H.264 first: OpenCV (used for face tracking) can't reliably decode AV1 on Windows.
+                    format="bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][vcodec^=avc1]+ba/"
+                           "bv*[height<=1080]+ba/b[height<=1080]/b",
+                    merge_output_format="mp4",
+                    outtmpl=os.path.join(DOWNLOADS_DIR, f"{cache_name}.%(ext)s"),
+                    progress_hooks=[hook],
+                )
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(source, download=True)
+                path = info["requested_downloads"][0]["filepath"]
     except Exception as e:
         raise RuntimeError(_friendly_error(e)) from e
 
+    if audio_only:
+        # For audio-only, return metadata without video probe
+        return {
+            "video_path": path,
+            "title": info.get("title") or "Untitled video",
+            "thumbnail": info.get("thumbnail", ""),
+            "id": info.get("id", ""),
+            "webpage_url": info.get("webpage_url", source),
+            "duration": info.get("duration") or 0,
+            "fps": 0,
+            "width": 0,
+            "height": 0,
+            "audio_only": True,
+        }
+    
     meta = probe_video(path)
     return {
         "video_path": path,
@@ -139,6 +179,7 @@ def download_video(source: str, progress_callback=None) -> dict:
         "webpage_url": info.get("webpage_url", source),
         **meta,
         "duration": info.get("duration") or meta["duration"],
+        "audio_only": False,
     }
 
 

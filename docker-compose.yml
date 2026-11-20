@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clipcraft-backend
+    ports:
+      - "5004:5004"
+    volumes:
+      - ./data:/app/data
+      - ./settings.json:/app/settings.json:ro
+    environment:
+      - CLIPCRAFT_PORT=5004
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5004/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Frontend for local dev (production uses Netlify)
+  frontend:
+    build:
+      context: ./nextjs-frontend
+      dockerfile: Dockerfile.frontend
+    container_name: clipcraft-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:5004
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  data:

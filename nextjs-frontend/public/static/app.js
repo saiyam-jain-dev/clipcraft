@@ -509,7 +509,21 @@
     statusBadge($('jobStatus'), status);
     $('processingPanel').classList.toggle('failed', failed);
     setText($('statusTitle'), failed ? 'This run needs attention' : status === 'queued' ? 'Your project is in the queue' : stageTitles[job.stage] || (completed ? stageTitles.completed : 'Working on your footage'));
-    setText($('statusMessage'), text(job.status_message) || (completed ? 'Render the moments you want, then download them.' : failed ? 'Any clips already rendered are still available below.' : 'Your local engine is working. You can come back from Projects.'));
+    const msg = text(job.status_message) || (completed ? 'Render the moments you want, then download them.' : failed ? 'Any clips already rendered are still available below.' : 'Your local engine is working. You can come back from Projects.');
+    setText($('statusMessage'), msg);
+    const statusNode = $('statusMessage');
+    if (!completed && !failed && job.stage === 'analyze') {
+      if (!statusNode.querySelector('.ai-wave')) {
+        const indicator = document.createElement('span');
+        indicator.className = 'ai-wave';
+        indicator.innerHTML = '<span></span><span></span><span></span><span></span><span></span>';
+        statusNode.appendChild(document.createTextNode(' '));
+        statusNode.appendChild(indicator);
+      }
+    } else {
+      const indicator = statusNode.querySelector('.ai-wave');
+      if (indicator) indicator.remove();
+    }
     setText($('progressLabel'), `${progress}%`);
     $('progressFill').style.width = `${progress}%`;
     $('jobProgress').setAttribute('aria-valuenow', String(progress));
@@ -518,8 +532,21 @@
     $('stageList').querySelectorAll('li').forEach((node, index) => {
       node.classList.toggle('done', completed || index < stageIndex);
       node.classList.toggle('active', !failed && !completed && status !== 'queued' && index === stageIndex);
-      if (index === stageIndex && !completed && !failed) node.setAttribute('aria-current', 'step');
-      else node.removeAttribute('aria-current');
+      if (index === stageIndex && !completed && !failed) {
+        node.setAttribute('aria-current', 'step');
+        // Add animated content to active stage
+        const span = node.querySelector('span');
+        if (span && !span.querySelector('.stage-spinner')) {
+          const spinner = document.createElement('span');
+          spinner.className = 'stage-spinner';
+          spinner.textContent = '⏳';
+          span.appendChild(spinner);
+        }
+      } else {
+        node.removeAttribute('aria-current');
+        const spinner = node.querySelector('.stage-spinner');
+        if (spinner) spinner.remove();
+      }
     });
     const engines = { ai: 'AI moment selection · Local transcription, reframing, and captions', heuristic: 'Local hook scoring · Add a free Gemini or Groq key in Settings for a stronger editor', audio: 'Audio peaks · Little speech in this video', visual: 'Visual action · Cuts and movement, with little speech', highlights: 'Highlight mode · Strong lines plus the most active stretches' };
     setText($('jobEngine'), engines[job.engine] || 'Local processing · Review framing, captions and context before posting');
@@ -544,6 +571,9 @@
     const pendingRenders = [...clips.values()].some(clip => clip && !clip.video_file && !clip.video_url && text(clip.clip_id));
     $('renderAll').hidden = !pendingRenders || busy;
     $('renderAll').disabled = busy;
+    // Show upload all button if YouTube is authenticated and clips are rendered
+    const hasRenderedClips = [...clips.values()].some(clip => clip && clip.video_file);
+    $('uploadAllYoutube').hidden = !hasRenderedClips || busy;
     sortClips();
     setText($('clipCount'), clips.size);
     $('clipsEmpty').hidden = clips.size > 0;
@@ -582,9 +612,44 @@
         scores.append(item);
       }
       const jobId = currentJobId;
-      card.querySelector('.clip-social').addEventListener('click', () => openSocial(jobId, text(clips.get(key)?.clip_id), text(clips.get(key)?.title, 'Untitled clip')));
+      card.querySelector('.clip-social').addEventListener('click', () => {
+        const clipId = clips.get(key)?.clip_id;
+        const title = clips.get(key)?.title || 'Untitled clip';
+        openSocial(jobId, clipId, title);
+      });
       card.querySelector('.trim-apply').addEventListener('click', () => trimClip(jobId, key, card));
       card.querySelector('.clip-render').addEventListener('click', () => renderClip(jobId, key, card));
+      card.querySelector('.clip-youtube').addEventListener('click', async () => {
+        const auth = await checkYoutubeAuth();
+        if (!auth) {
+          if (confirm('YouTube not authenticated. Click OK to open Google OAuth in a new tab. After completing authorization, return here.')) {
+            try {
+              await api('/api/youtube/authenticate', { method: 'POST' });
+              alert('YouTube authenticated successfully. Now uploading this clip...');
+            } catch (e) {
+              alert('Authentication failed: ' + (e.error || e.message));
+              return;
+            }
+          } else return;
+        }
+        if (!confirm('Upload this clip to YouTube as a private video?')) return;
+        const btn = card.querySelector('.clip-youtube');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="render-spinner"></span>Uploading...';
+        try {
+          const res = await api(`/api/youtube/upload/${jobId}/${key}`, {
+            method: 'POST',
+            body: JSON.stringify({ privacy: 'private' })
+          });
+          alert('Clip uploaded to YouTube! Video ID: ' + res.video_id);
+          btn.disabled = false;
+          btn.innerHTML = '<svg class="icon"><use href="#i-youtube"/></svg>YouTube';
+        } catch (e) {
+          alert('Upload failed: ' + (e.error || e.message));
+          btn.disabled = false;
+          btn.innerHTML = '<svg class="icon"><use href="#i-youtube"/></svg>YouTube';
+        }
+      });
       clipNodes.set(key, card);
       $('clipsGrid').append(card);
     }
@@ -641,6 +706,8 @@
     const subtitles = card.querySelector('.subtitle-download');
     subtitles.hidden = !subtitleUrl;
     if (subtitleUrl) { subtitles.href = subtitleUrl; subtitles.setAttribute('aria-label', `Download captions for ${title}`); }
+    const youtubeBtn = card.querySelector('.clip-youtube');
+    youtubeBtn.hidden = !file;
     card.querySelector('.clip-social').disabled = !text(clip.clip_id);
   }
 
@@ -677,6 +744,45 @@
       if (epoch === jobEpoch) { clearTimeout(pollTimer); pollJob(epoch); $('processingPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
     } catch (error) { if (epoch === jobEpoch) message('jobError', `Render failed: ${error.message}`, 'error'); }
     finally { if (epoch === jobEpoch) $('renderAll').disabled = false; }
+  }
+
+  async function setupYoutubeButtons() {
+    const auth = await checkYoutubeAuth();
+    document.querySelectorAll('.clip-youtube').forEach(btn => {
+      const clipId = btn.closest('.clip-card').dataset.clipId;
+      const clip = clips.get(clipId);
+      btn.hidden = !clip || !clip.video_file;
+      btn.onclick = async () => {
+        if (!auth) {
+          if (confirm('YouTube not authenticated. Click OK to open Google OAuth in a new tab. After completing authorization, return here.')) {
+            try {
+              await api('/api/youtube/authenticate', { method: 'POST' });
+              alert('YouTube authenticated successfully. Now uploading this clip...');
+            } catch (e) {
+              alert('Authentication failed: ' + (e.error || e.message));
+              return;
+            }
+          } else return;
+        }
+        if (!confirm('Upload this clip to YouTube as a private video?')) return;
+        btn.disabled = true;
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="render-spinner"></span>Uploading...';
+        try {
+          const res = await api(`/api/youtube/upload/${currentJobId}/${clipId}`, {
+            method: 'POST',
+            body: JSON.stringify({ privacy: 'private' })
+          });
+          alert('Clip uploaded to YouTube! Video ID: ' + res.video_id);
+          btn.disabled = false;
+          btn.innerHTML = originalText;
+        } catch (e) {
+          alert('Upload failed: ' + (e.error || e.message));
+          btn.disabled = false;
+          btn.innerHTML = originalText;
+        }
+      };
+    });
   }
 
   async function trimClip(jobId, key, card) {
@@ -953,11 +1059,28 @@
   $('projectSearch').addEventListener('input', renderProjects);
   $('projectFilter').addEventListener('change', renderProjects);
   $('clipSort').addEventListener('change', sortClips);
+  $('uploadAllYoutube').addEventListener('click', uploadAllToYoutube);
   $('renderAll').addEventListener('click', renderAllClips);
   $('retryJob').addEventListener('click', retryJob);
   $('refreshJob').addEventListener('click', () => { clearTimeout(pollTimer); pollJob(jobEpoch); });
   $('settingsOpen').addEventListener('click', openSettings);
   $('footerSettings').addEventListener('click', openSettings);
+  $('youtubeAuth').addEventListener('click', async () => {
+    const auth = await checkYoutubeAuth();
+    if (auth) {
+      alert('YouTube is already connected.');
+      return;
+    }
+    if (confirm('Connect your YouTube account? This will open Google OAuth in a new tab.')) {
+      try {
+        await api('/api/youtube/authenticate', { method: 'POST', timeout: 0 });
+        alert('YouTube connected successfully!');
+        loadProjects(); // Refresh to show upload buttons
+      } catch (e) {
+        alert('Authentication failed: ' + (e.error || e.message));
+      }
+    }
+  });
   $('reloadSettings').addEventListener('click', loadSettings);
   $('settingsForm').addEventListener('submit', saveSettings);
   $('llmProvider').addEventListener('change', providerFields);
@@ -973,6 +1096,145 @@
   $('deleteDialog').addEventListener('close', () => { deleteTarget = null; });
   document.addEventListener('visibilitychange', () => { if (!document.hidden && view !== 'job') loadProjects(); });
   window.addEventListener('beforeunload', () => { if (blobUrl) URL.revokeObjectURL(blobUrl); });
+
+  async function checkYoutubeAuth() {
+    try {
+      const res = await api('/api/youtube/auth-status');
+      return res.authenticated;
+    } catch { return false; }
+  }
+
+  async function uploadAllToYoutube() {
+    if (!currentJobId) return;
+    const auth = await checkYoutubeAuth();
+    if (!auth) {
+      if (confirm('YouTube not authenticated. Click OK to open Google OAuth in a new tab. After completing authorization, return here.')) {
+        try {
+          await api('/api/youtube/authenticate', { method: 'POST', timeout: 0 });
+          alert('YouTube authenticated successfully. Now uploading all clips...');
+        } catch (e) {
+          alert('Authentication failed: ' + (e.error || e.message));
+          return;
+        }
+      } else return;
+    }
+    if (!confirm('Upload all rendered clips to YouTube as private videos?')) return;
+    const btn = $('uploadAllYoutube');
+    btn.disabled = true;
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<span class="render-spinner"></span>Uploading...';
+    try {
+      // Get list of clips to upload
+      const clipsToUpload = [...clips.values()].filter(c => c && c.video_file && c.clip_id);
+      const total = clipsToUpload.length;
+      if (total === 0) {
+        alert('No clips are ready for upload. Render clips first.');
+        return;
+      }
+      let uploaded = 0;
+      let failed = 0;
+      const results = [];
+
+      // Upload clips one by one with progress updates
+      for (let i = 0; i < clipsToUpload.length; i++) {
+        const clip = clipsToUpload[i];
+        const clipId = clip.clip_id;
+        btn.innerHTML = `<span class="render-spinner"></span>Uploading ${i + 1}/${total}...`;
+        try {
+          const res = await api(`/api/youtube/upload/${currentJobId}/${clipId}`, {
+            method: 'POST',
+            body: JSON.stringify({ privacy: 'private' })
+          });
+          uploaded++;
+          results.push({ clipId, success: true, video_id: res.video_id });
+        } catch (e) {
+          failed++;
+          results.push({ clipId, success: false, error: e.message });
+        }
+      }
+
+      if (failed > 0) {
+        alert(`Uploaded ${uploaded} clips. ${failed} failed.`);
+      } else {
+        alert(`All ${uploaded} clips uploaded to YouTube as private videos.`);
+      }
+    } catch (e) {
+      alert('Upload failed: ' + (e.error || e.message));
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  }
+
+  async function checkYoutubeAuth() {
+    try {
+      const res = await api('/api/youtube/auth-status');
+      return res.authenticated;
+    } catch { return false; }
+  }
+
+  async function uploadAllToYoutube() {
+    if (!currentJobId) return;
+    const auth = await checkYoutubeAuth();
+    if (!auth) {
+      if (confirm('YouTube not authenticated. Click OK to open Google OAuth in a new tab. After completing authorization, return here.')) {
+        try {
+          await api('/api/youtube/authenticate', { method: 'POST', timeout: 0 });
+          alert('YouTube authenticated successfully. Now uploading all clips...');
+        } catch (e) {
+          alert('Authentication failed: ' + (e.error || e.message));
+          return;
+        }
+      } else return;
+    }
+    if (!confirm('Upload all rendered clips to YouTube as private videos?')) return;
+    const btn = $('uploadAllYoutube');
+    btn.disabled = true;
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<span class="render-spinner"></span>Uploading...';
+    try {
+      // Get list of clips to upload
+      const clipsToUpload = [...clips.values()].filter(c => c && c.video_file && c.clip_id);
+      const total = clipsToUpload.length;
+      if (total === 0) {
+        alert('No clips are ready for upload. Render clips first.');
+        return;
+      }
+      let uploaded = 0;
+      let failed = 0;
+      const results = [];
+
+      // Upload clips one by one with progress updates
+      for (let i = 0; i < clipsToUpload.length; i++) {
+        const clip = clipsToUpload[i];
+        const clipId = clip.clip_id;
+        btn.innerHTML = `<span class="render-spinner"></span>Uploading ${i + 1}/${total}...`;
+        try {
+          const res = await api(`/api/youtube/upload/${currentJobId}/${clipId}`, {
+            method: 'POST',
+            body: JSON.stringify({ privacy: 'private' })
+          });
+          uploaded++;
+          results.push({ clipId, success: true, video_id: res.video_id });
+        } catch (e) {
+          failed++;
+          results.push({ clipId, success: false, error: e.message });
+        }
+      }
+
+      if (failed > 0) {
+        alert(`Uploaded ${uploaded} clips. ${failed} failed.`);
+      } else {
+        alert(`All ${uploaded} clips uploaded to YouTube as private videos.`);
+      }
+    } catch (e) {
+      alert('Upload failed: ' + (e.error || e.message));
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  }
+
   syncOptions();
   switchSource('url');
   loadProjects();

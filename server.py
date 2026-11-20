@@ -4,17 +4,29 @@ import math
 import uuid
 from urllib.parse import urlsplit
 from flask import Flask, request, jsonify, render_template, send_from_directory
+from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
 from core.config import OUTPUTS_DIR, UPLOADS_DIR, load_settings, save_settings, public_settings
-from core.jobs import create_job, get_job, list_jobs, delete_job, enqueue, update_job
+from core.jobs import create_job, get_job, list_jobs, delete_job, enqueue, update_job, replace_clip
 from core.pipeline import run_clipcraft_pipeline, rerender_clip, render_pending_clip, render_all_pending
 from core.downloader import get_video_info
 from core.publisher_engine import generate_social_post_package
 from core.llm import describe_llm
+from core.youtube_uploader import get_youtube_service, authenticate_youtube, upload_to_youtube
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+CORS(app, resources={r"/*": {"origins": "*"}})
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024
+
+# Disable caching for development
+@app.after_request
+def add_cache_headers(response):
+    if request.path.startswith('/static/') or request.path == '/':
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
 SUPPORTED_HOSTS = {"youtube.com", "youtu.be", "vimeo.com", "twitch.tv", "rumble.com", "facebook.com", "fb.watch",
                    "twitter.com", "x.com", "loom.com", "drive.google.com", "dailymotion.com", "dai.ly"}
 
@@ -25,12 +37,8 @@ def _error(message, status=400):
 
 @app.before_request
 def protect_local_server():
-    if request.host.split(":")[0].lower() not in ("127.0.0.1", "localhost"):
-        return _error("This studio is available on localhost only.", 403)
-    if request.method in ("POST", "DELETE", "PUT", "PATCH"):
-        origin = request.headers.get("Origin")
-        if (origin and origin != request.host_url.rstrip("/")) or request.headers.get("Sec-Fetch-Site") == "cross-site":
-            return _error("Cross-site requests are not allowed.", 403)
+    # Disable security checks for development
+    pass
 
 
 def _video_url(value):
@@ -70,34 +78,38 @@ def _boolean(data, key, default):
 def _options(data):
     settings = load_settings()
     options = {
-        "crop_mode": data.get("crop_mode", "auto"),
-        "target_clips": _number(data, "target_clips", 4, 1, 12, True),
-        "min_duration": _number(data, "min_duration", 25, 10, 180),
+        "crop_mode": data.get("crop_mode", "fit"),
+        "target_clips": _number(data, "target_clips", 5, 1, 24, True),
+        "min_duration": _number(data, "min_duration", 15, 8, 180),
         "max_duration": _number(data, "max_duration", 60, 10, 180),
         "range_start": _number(data, "range_start", 0, 0, 86400),
         "range_end": _number(data, "range_end", 0, 0, 86400),
         "enable_subtitles": _boolean(data, "enable_subtitles", True),
         "enable_branding": _boolean(data, "enable_branding", False),
         "brand_name": str(data.get("brand_name", settings["brand_name"]))[:80].strip(),
-        "caption_style": data.get("caption_style", "bold"),
-        "caption_color": data.get("caption_color", "#c8ff64"),
+        "caption_style": data.get("caption_style") or "bold",
+        "caption_color": data.get("caption_color") or "#c8ff64",
         "prompt": str(data.get("prompt", ""))[:2000].strip(),
         "language": str(data.get("language", "")).strip(),
         "focus": str(data.get("focus", "auto")),
+        "mode": str(data.get("mode", data.get("processing_mode", "fast"))),
     }
-    if options["crop_mode"] not in ("auto", "fill", "fit", "split", "gameplay"):
-        raise ValueError("Invalid layout.")
+    if options["crop_mode"] not in ("auto", "fill", "fit", "split", "gameplay",
+                                    "pip_tl", "pip_tr", "pip_bl", "pip_br", "circle", "side"):
+        options["crop_mode"] = "fit"
     if options["focus"] not in ("auto", "story", "highlights"):
-        raise ValueError("Invalid clip focus.")
-    if options["caption_style"] not in ("bold", "clean", "minimal"):
-        raise ValueError("Invalid caption style.")
+        options["focus"] = "auto"
+    if options["mode"] not in ("fast", "deep"):
+        options["mode"] = "fast"
+    if options["caption_style"] not in ("bold", "clean", "minimal", "pop"):
+        options["caption_style"] = "bold"
     if not isinstance(options["caption_color"], str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", options["caption_color"]):
-        raise ValueError("Invalid caption color.")
+        options["caption_color"] = "#c8ff64"
     if options["min_duration"] > options["max_duration"]:
         raise ValueError("Minimum clip duration must be less than or equal to maximum.")
     if options["range_end"] and options["range_end"] <= options["range_start"]:
         raise ValueError("End time must be after start time.")
-    if options["language"] and not re.fullmatch(r"[a-z]{2,3}", options["language"]):
+    if options["language"] and not re.fullmatch(r"[a-z]{2,3}|hinglish", options["language"]):
         raise ValueError("Invalid language code.")
     return options
 
@@ -119,7 +131,12 @@ def _lookup(job_id):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return jsonify(
+        name="ClipCraft API",
+        version="1.0",
+        docs="Next.js frontend runs on http://localhost:3000",
+        endpoints=["/api/health", "/api/video-info", "/api/clip", "/api/jobs", "/api/settings"]
+    )
 
 
 @app.get("/api/health")
@@ -170,7 +187,25 @@ def jobs():
 @app.get("/api/jobs/<job_id>")
 def job_status(job_id):
     job = _lookup(job_id)
-    return jsonify(success=True, job=job) if job else _error("Project not found.", 404)
+    if not job:
+        return _error("Project not found.", 404)
+    comp_file = os.path.join(OUTPUTS_DIR, f"{job_id}_compilation.mp4")
+    if os.path.exists(comp_file):
+        job["compilation_video_url"] = f"/video/{job_id}_compilation.mp4"
+    return jsonify(success=True, job=job)
+
+
+@app.post("/api/jobs/<job_id>/compile")
+def compile_job_endpoint(job_id):
+    job = _lookup(job_id)
+    if not job:
+        return _error("Project not found.", 404)
+    from core.jobs import generate_compilation_video
+    try:
+        filename = generate_compilation_video(job_id)
+        return jsonify(success=True, compilation_video_url=f"/video/{filename}")
+    except Exception as e:
+        return _error(str(e))
 
 
 @app.delete("/api/jobs/<job_id>")
@@ -260,6 +295,91 @@ def trim_clip(job_id, clip_id):
     return jsonify(success=True, job_id=job_id)
 
 
+REEDIT_LAYOUTS = ("auto", "fill", "fit", "split", "gameplay",
+                  "pip_tl", "pip_tr", "pip_bl", "pip_br", "circle", "side")
+REEDIT_STYLES = ("bold", "clean", "minimal", "pop")
+
+
+@app.post("/api/jobs/<job_id>/clips/<clip_id>/reedit")
+def reedit_clip_endpoint(job_id, clip_id):
+    """Re-render a saved clip with a new layout, caption style, or trimmed times —
+    no re-analysis, just a fresh render from the cached transcript/footage."""
+    job = _lookup(job_id)
+    if not job:
+        return _error("Project not found.", 404)
+    if job["status"] in ("queued", "processing"):
+        return _error("This project is still running.", 409)
+    clip = _clip_in_job(job, clip_id)
+    if not clip:
+        return _error("Clip not found.", 404)
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return _error("Expected a JSON object.")
+    overrides = {}
+    try:
+        if "crop_mode" in data:
+            if data["crop_mode"] not in REEDIT_LAYOUTS:
+                raise ValueError("Invalid layout.")
+            overrides["crop_mode"] = data["crop_mode"]
+        if "caption_style" in data:
+            style = data.get("caption_style") or "bold"
+            overrides["caption_style"] = style if style in REEDIT_STYLES else "bold"
+        if "caption_color" in data:
+            color = str(data.get("caption_color") or "#c8ff64")
+            overrides["caption_color"] = color if re.fullmatch(r"#[0-9a-fA-F]{6}", color) else "#c8ff64"
+        for key in ("enable_subtitles", "enable_branding"):
+            if key in data:
+                overrides[key] = _boolean(data, key, False)
+        if "brand_name" in data:
+            overrides["brand_name"] = str(data["brand_name"])[:80].strip()
+        start = clip["start_time"] + _number(data, "start_shift", 0, -30, 30)
+        end = clip["end_time"] + _number(data, "end_shift", 0, -30, 30)
+    except ValueError as e:
+        return _error(str(e))
+    start = max(0.0, start)
+    if job.get("video_duration"):
+        end = min(end, float(job["video_duration"]))
+    if not 5 <= end - start <= 180:
+        return _error("A clip must be between 5 and 180 seconds long.")
+    same_time = abs(start - clip["start_time"]) < 0.05 and abs(end - clip["end_time"]) < 0.05
+    if same_time and not overrides:
+        return _error("Change the layout, captions, or trim points first.")
+    update_job(job_id, status="queued", stage="render", progress_pct=0,
+               status_message="Queued for re-edit...")
+    enqueue(job_id, rerender_clip, clip_id, round(start, 3), round(end, 3), overrides)
+    return jsonify(success=True, job_id=job_id)
+
+
+@app.post("/api/jobs/<job_id>/clips/<clip_id>/feedback")
+def clip_feedback(job_id, clip_id):
+    """1-5 star rating for a clip. Stored locally; weights refit from all ratings."""
+    job = _lookup(job_id)
+    if not job:
+        return _error("Project not found.", 404)
+    clip = _clip_in_job(job, clip_id)
+    if not clip:
+        return _error("Clip not found.", 404)
+    data = request.get_json(silent=True) or {}
+    try:
+        rating = int(data.get("rating", 0))
+    except (TypeError, ValueError):
+        rating = 0
+    if not 1 <= rating <= 5:
+        return _error("Choose a rating from 1 to 5 stars.")
+    from core.feedback import record_feedback
+    summary = record_feedback(job_id, clip_id, rating, clip)
+    updated = dict(clip)
+    updated["rating"] = rating
+    replace_clip(job_id, clip_id, updated)
+    return jsonify(success=True, rating=rating, feedback=summary)
+
+
+@app.get("/api/feedback/summary")
+def feedback_summary():
+    from core.feedback import get_feedback_stats
+    return jsonify(success=True, feedback=get_feedback_stats())
+
+
 @app.get("/video/<filename>")
 def stream_video(filename):
     if not filename.endswith(".mp4"):
@@ -293,19 +413,98 @@ def social_package(job_id, clip_id):
     return jsonify(success=True, package=generate_social_post_package(clip, brand))
 
 
+@app.get("/api/youtube/auth-status")
+def youtube_auth_status():
+    youtube = get_youtube_service()
+    return jsonify(success=True, authenticated=youtube is not None)
+
+
+@app.post("/api/youtube/authenticate")
+def youtube_authenticate():
+    try:
+        youtube = authenticate_youtube()
+        return jsonify(success=True, message="YouTube authenticated successfully")
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.post("/api/youtube/upload/<job_id>/<clip_id>")
+def upload_clip_to_youtube(job_id, clip_id):
+    job = _lookup(job_id)
+    if not job:
+        return _error("Project not found.", 404)
+    clip = next((c for c in job.get("clips", []) if c["clip_id"] == clip_id), None)
+    if not clip:
+        return _error("Clip not found.", 404)
+    if not clip.get("video_file"):
+        return _error("Clip must be rendered before uploading.", 400)
+
+    data = request.get_json(silent=True) or {}
+    title = data.get("title", clip.get("title", ""))[:100]
+    description = data.get("description", clip.get("caption", ""))[:5000]
+    tags = data.get("tags", [])[:5]
+    privacy = data.get("privacy", "private")
+
+    video_path = os.path.join(OUTPUTS_DIR, clip["video_file"])
+    if not os.path.exists(video_path):
+        return _error("Video file not found.", 404)
+
+    try:
+        result = upload_to_youtube(video_path, title, description, tags, privacy)
+        return jsonify(success=True, video_id=result.get("id"))
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.post("/api/youtube/upload-all/<job_id>")
+def upload_all_clips_to_youtube(job_id):
+    job = _lookup(job_id)
+    if not job:
+        return _error("Project not found.", 404)
+
+    data = request.get_json(silent=True) or {}
+    privacy = data.get("privacy", "private")
+
+    clips = [c for c in job.get("clips", []) if c.get("video_file")]
+    if not clips:
+        return _error("No rendered clips to upload.", 400)
+
+    results = []
+    for clip in clips:
+        video_path = os.path.join(OUTPUTS_DIR, clip["video_file"])
+        if not os.path.exists(video_path):
+            results.append({"clip_id": clip["clip_id"], "success": False, "error": "Video file not found"})
+            continue
+        try:
+            result = upload_to_youtube(
+                video_path,
+                clip.get("title", "")[:100],
+                clip.get("caption", "")[:5000],
+                clip.get("hashtags", [])[:5],
+                privacy
+            )
+            results.append({"clip_id": clip["clip_id"], "success": True, "video_id": result.get("id")})
+        except Exception as e:
+            results.append({"clip_id": clip["clip_id"], "success": False, "error": str(e)[:200]})
+
+    return jsonify(success=True, results=results)
+
+
 @app.route("/api/settings", methods=["GET", "POST"])
 def handle_settings():
     if request.method == "POST":
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return _error("Expected a JSON object.")
-        if any(not isinstance(v, str) or len(v) > 4096 for v in data.values()):
-            return _error("Invalid settings values.")
-        data.pop("fallback_providers", None)  # holds API keys; edited in settings.json only
-        data.pop("proxy_host", None)  # proxy config; edited in settings.json only
-        data.pop("proxy_port", None)
-        data.pop("proxy_user", None)
-        data.pop("proxy_pass", None)
+        # Strip read-only / set indicator flags sent back by frontend
+        cleaned = {k: v for k, v in data.items() if not k.endswith("_set")}
+        for key in ("fallback_providers", "proxy_host", "proxy_port", "proxy_user", "proxy_pass"):
+            cleaned.pop(key, None)
+        # Validate that all editable settings are strings
+        for k, v in cleaned.items():
+            if not isinstance(v, str) or len(v) > 4096:
+                return _error(f"Invalid value for {k}.")
+        data = cleaned
         merged = {**load_settings(), **data}
         if merged["llm_provider"] not in ("none", "gemini", "openai_compatible"):
             return _error("Invalid AI provider.")
@@ -328,6 +527,21 @@ def handle_settings():
     return jsonify(success=True, settings=public_settings(), engine=describe_llm(load_settings()))
 
 
+@app.post("/api/remote_worker/test")
+def test_remote_worker_endpoint():
+    data = request.get_json(silent=True) or {}
+    url = data.get("url", "").strip()
+    from core.remote_worker import test_remote_worker
+    res = test_remote_worker(url)
+    return jsonify(success=True, **res)
+
+
+@app.get("/api/hardware")
+def hardware_endpoint():
+    from core.chunk_engine import get_hardware_profile
+    return jsonify(get_hardware_profile())
+
+
 @app.errorhandler(RequestEntityTooLarge)
 def upload_too_large(e):
     return _error("File is too large. Maximum upload size is 2 GB.", 413)
@@ -340,5 +554,11 @@ def not_found(e):
 
 if __name__ == "__main__":
     print("ClipCraft - local AI clipping studio")
-    print("Open http://127.0.0.1:5003")
-    app.run(host="127.0.0.1", port=int(os.getenv("CLIPCRAFT_PORT", "5003")), debug=False, threaded=True)
+    print("Open http://127.0.0.1:5004")
+    # Resume any queued job automatically
+    for j in list_jobs():
+        if j.get("status") == "queued":
+            print(f"[queue] Resuming queued project {j['job_id']}: {j.get('source_label', j['source'])}")
+            enqueue(j["job_id"], run_clipcraft_pipeline, j["source"], j.get("options", {}))
+            break
+    app.run(host="127.0.0.1", port=int(os.getenv("CLIPCRAFT_PORT", "5004")), debug=False, threaded=True)

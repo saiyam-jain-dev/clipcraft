@@ -178,7 +178,7 @@ def loud_windows(profile: dict, count: int, length: float) -> list:
 
 
 # ----------------------------------------------------------------------------- per-clip video
-def download_section(source: str, start: float, end: float, out_path: str, info: dict = None) -> str:
+def download_section(source: str, start: float, end: float, out_path: str, info: dict = None, gpu_id: int = None) -> str:
     """Frame-accurate cut of [start, end] straight from the stream URLs (HTTP range seeks, no full download)."""
     if info is None:
         info = fetch_info(source, format=VIDEO_FORMAT)
@@ -189,20 +189,49 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
         if headers:
             cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
         cmd += ["-ss", f"{start:.3f}", "-i", f["url"]]
-    cmd += ["-t", f"{end - start:.3f}", "-map", "0:v:0", "-map", f"{len(fmts) - 1}:a:0?",
-            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]
-    # Intermediate file: it is decoded again by the renderer, so NVENC is fine and much faster.
-    # If the GPU is busy (parallel clips share the NVENC session limit) fall back to x264.
+    cmd += ["-t", f"{end - start:.3f}", "-map", "0:v:0", "-map", f"{len(fmts) - 1}:a:0?"]
+    # Fast path: instant stream copy (0.2s instead of 10s transcode)
+    try:
+        r_copy = subprocess.run(cmd + ["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", out_path],
+                                capture_output=True, text=True, timeout=30)
+        if r_copy.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 10000:
+            return out_path
+    except Exception:
+        pass
+
+    # Fallback to NVENC or libx264 transcode if stream copy fails
+    cmd_transcode = cmd + ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]
     last_err = ""
-    for video_args in (["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "20", "-b:v", "0"],
-                       ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]):
-        r = subprocess.run(cmd + video_args + [out_path], capture_output=True, text=True, timeout=900)
+    nv_args = ["-c:v", "h264_nvenc"]
+    if gpu_id is not None:
+        nv_args += ["-gpu", str(gpu_id)]
+    nv_args += ["-preset", "p4", "-rc", "vbr", "-cq", "20", "-b:v", "0"]
+
+    for video_args in (nv_args, ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]):
+        r = subprocess.run(cmd_transcode + video_args + [out_path], capture_output=True, text=True, timeout=900)
         if r.returncode == 0 and os.path.exists(out_path):
             return out_path
         last_err = r.stderr
         if "nvenc" not in last_err.lower():
             break
     raise RuntimeError(f"Could not download this part of the video: {last_err.strip()[-300:]}")
+
+
+def download_lowres_section(source: str, start: float, end: float, out_path: str,
+                            info: dict = None) -> str:
+    """A tiny <=240p copy of just [start, end] — only good enough to *look* at the
+    action (motion, flashes, strobes), never for rendering."""
+    if info is None:
+        info = fetch_info(source)
+    opts = _ydl_opts(format="worst[ext=mp4][height<=240]/worst[height<=240]/worst",
+                     outtmpl=out_path + ".%(ext)s",
+                     download_ranges=download_range_func(None, [(max(0.0, start), end)]))
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            res = ydl.extract_info(source, download=True)
+    except Exception as e:
+        raise RuntimeError(_friendly_error(e)) from e
+    return res["requested_downloads"][0]["filepath"]
 
 
 def preview_frame(info: dict, t: float, out_path: str) -> str:

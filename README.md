@@ -1,8 +1,15 @@
 # ClipCraft
 
-A free, local AI clipping studio. Paste a YouTube link (or any supported video URL), or drop in a file, and it finds the moments worth posting — then renders vertical 9:16 clips with captions, titles, and ready-to-paste social copy. Think of it as a self-hosted take on the paid AI clippers, running entirely on your own machine.
+A free, local AI clipping studio with a modern Next.js frontend. Paste a YouTube link (or any supported video URL), or drop in a file, and it finds the moments worth posting — then renders vertical 9:16 clips with captions, titles, and ready-to-paste social copy.
 
-Everything stays on `127.0.0.1`. Nothing gets uploaded anywhere except the video download itself and whatever AI API you choose to configure (or nothing at all — the built-in heuristics work fine without a key).
+## Architecture
+
+ClipCraft now uses a microservices architecture:
+
+- **Frontend**: Next.js 15 with TypeScript and React (http://localhost:3000)
+- **Backend**: Python Flask with faster-whisper, FFmpeg (http://127.0.0.1:5004)
+
+Everything stays on `127.0.0.1`. Nothing gets uploaded anywhere except the video download itself and whatever AI API you choose to configure.
 
 ## What it does
 
@@ -10,42 +17,87 @@ Everything stays on `127.0.0.1`. Nothing gets uploaded anywhere except the video
 - **Renders proper vertical clips.** 1080x1920 MP4s with burned-in captions (bold / clean / minimal styles), optional face-aware cropping for talking heads, and gameplay-friendly layouts.
 - **Gives you the package.** Each clip comes with a virality score, a title, a short "why this works" note, a preview, a download link, and copy-paste captions/titles for socials.
 - **Lets you tweak before you commit.** Preview frames render fast, you can trim in/out points, then re-render just that clip.
-- **Plugs into free AI, optionally.** Gemini, or any OpenAI-compatible endpoint (Groq, OpenRouter, Ollama, LM Studio, a local server). A chain of fallback providers is supported. No key? Heuristics carry the whole thing.
+- **Uses a fast model for clip selection.** The recommended setup is Groq's OpenAI-compatible endpoint with `openai/gpt-oss-120b`; add a Groq API key in Settings. Gemini and other OpenAI-compatible endpoints are also supported. No key? Local heuristics still work.
 - **Handles long videos.** Whisper transcription and LLM scoring chunk large files automatically.
 
 ## Requirements
 
+- Node.js 18+
 - Python 3.10+
+- FFmpeg
 - A few GB of disk for models and renders
 - (Optional) an API key for a supported LLM provider
 
-## Setup
+## Quick Start
 
+### Windows
+
+Run the included startup script:
 ```bash
-git clone https://github.com/<you>/clipcraft.git
-cd clipcraft
+start.bat
+```
+
+This will start both the Python backend and Next.js frontend.
+
+### Manual Setup
+
+1. Install Python dependencies:
+```bash
 python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # macOS/Linux
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Then either:
-
+2. Install frontend dependencies:
 ```bash
-cp settings.example.json settings.json   # fill in what you want
+cd nextjs-frontend
+npm install
+```
+
+3. Configure settings (optional):
+```bash
+cp settings.example.json settings.json
+# Edit settings.json with your API keys
+```
+
+4. Start the backend:
+```bash
 python server.py
 ```
 
-or skip the file entirely and use environment variables:
-
+5. Start the frontend (in a new terminal):
 ```bash
-set GEMINI_API_KEY=your-key-here         # Windows
-# export GEMINI_API_KEY=your-key-here    # macOS/Linux
-python server.py
+cd nextjs-frontend
+npm run dev
 ```
 
-Open http://127.0.0.1:5003 and you're in.
+6. Open http://localhost:3000
+
+## Project Layout
+
+```
+├── server.py              # Flask backend (video processing)
+├── core/                  # Backend logic
+│   ├── pipeline.py        # End-to-end job orchestration
+│   ├── virality_engine.py # Moment detection & scoring
+│   ├── transcriber.py     # faster-whisper wrapper
+│   ├── renderer.py        # ffmpeg clip rendering
+│   ├── subtitle_engine.py # Caption generation & styling
+│   ├── face_tracker.py    # Face-aware vertical cropping
+│   ├── llm.py             # Gemini + OpenAI-compatible providers
+│   ├── downloader.py      # yt-dlp ingestion
+│   └── jobs.py            # Job queue & persistence
+├── nextjs-frontend/       # Next.js frontend
+│   ├── src/
+│   │   ├── app/          # Next.js app directory
+│   │   ├── components/   # React components
+│   │   ├── lib/          # API client & utilities
+│   │   └── types/        # TypeScript types
+│   └── public/           # Static assets
+├── outputs/               # Rendered clips
+├── uploads/               # Uploaded videos
+└── jobs/                  # Job state
+```
 
 ## Settings
 
@@ -56,38 +108,40 @@ Open http://127.0.0.1:5003 and you're in.
 | `llm_provider` | `gemini`, `openai_compatible`, or `none` |
 | `gemini_api_key` / `openai_api_key` | Your keys (env vars work too) |
 | `openai_base_url` / `openai_model` | Any OpenAI-compatible endpoint |
-| `fallback_providers` | JSON list of extra engines, tried in order. Edited in `settings.json` only — never sent to the browser |
+| `fallback_providers` | JSON list of extra engines, tried in order |
 | `whisper_model` | `tiny` / `base` / `small` / `medium` / `large-v3` |
-| `cookies_from_browser` | `chrome`, `edge`, `firefox`, etc. — for when YouTube asks "are you a bot?" |
+| `cookies_from_browser` | `chrome`, `edge`, `firefox`, etc. |
 | `brand_name` | Watermark/branding text for clips |
 
 Everything can also be changed from the settings panel in the UI.
 
-## How it works, briefly
+## Development
+
+### Backend Development
+
+The Flask backend serves the API for video processing. It remains largely unchanged from the original version.
+
+```bash
+python server.py
+```
+
+### Frontend Development
+
+The Next.js frontend is a modern React application with TypeScript.
+
+```bash
+cd nextjs-frontend
+npm run dev
+```
+
+### API Configuration
+
+The frontend communicates with the backend via the `NEXT_PUBLIC_API_URL` environment variable. Default is `http://127.0.0.1:5004`.
+
+Edit `nextjs-frontend/.env.local` to change this:
 
 ```
-link/file -> yt-dlp or upload -> faster-whisper transcript
-        -> sentence segmentation -> virality scoring (heuristics + optional LLM)
-        -> ffmpeg render (crop, captions, branding) -> clips + social copy
-```
-
-The interesting part is `core/virality_engine.py`, which does the moment scoring locally with no model required.
-
-## Project layout
-
-```
-server.py            Flask app, localhost-only API
-core/
-  pipeline.py        end-to-end job orchestration
-  virality_engine.py moment detection & scoring
-  transcriber.py     faster-whisper wrapper
-  renderer.py        ffmpeg clip rendering
-  subtitle_engine.py caption generation & styling
-  face_tracker.py    face-aware vertical cropping
-  llm.py             Gemini + OpenAI-compatible providers
-  downloader.py      yt-dlp ingestion
-  jobs.py            job queue & persistence
-static/ templates/   the UI
+NEXT_PUBLIC_API_URL=http://127.0.0.1:5004
 ```
 
 ## Contributing

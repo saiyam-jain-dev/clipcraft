@@ -1,0 +1,345 @@
+CLIPCRAFT HANDOFF — read this before changing anything
+Updated: 2026-11-19
+Project: C:\Users\Sammy\Desktop\yt\clipcraft
+Owner request: finish this local app into a free Opus-style AI clipping studio. Paste a YouTube (or other) link or upload a long video, find complete high-value moments, render vertical Shorts/Reels with captions, titles, and social copy.
+
+If you are a new agent: do not restart from scratch. The pipeline already runs. Fix the gaps in the "Still to do" section, update the STATUS LOG at the bottom of this file after each meaningful change, and do not commit unless the user asks.
+
+================================================================================
+WHAT THE USER WANTS
+================================================================================
+Opus (https://www.opus.pro/) is a paid AI clipper. The user wants the same product behavior, free, running on their own machine:
+
+1. Paste any public video link (YouTube first) or upload a file.
+2. The app must NOT randomly slice the video into equal chunks.
+3. It must find complete moments: a hook in the first ~3 seconds, a self-contained middle, and a payoff.
+4. Render 9:16 clips for YouTube Shorts and Instagram Reels, with burned-in captions.
+5. Show a score, a title, why the moment was chosen, a preview, download, and copy-paste social text.
+6. Optional free AI API (Gemini or Groq / any OpenAI-compatible endpoint). Heuristics must still work with no key.
+7. Stay localhost-only. Do not publish videos automatically. Do not copy Opus source, branding, or private APIs.
+
+Do not reverse-engineer or scrape Opus's private backend. Match the public product behavior with our own pipeline.
+
+================================================================================
+HOW OPUS-STYLE CLIPPING ACTUALLY WORKS (build this, do not clone their servers)
+================================================================================
+Public product claims (homepage + FAQ, observed 2026-11-19), and the engineering that produces that result:
+
+A. Ingest
+   - Link or file. Hosts they advertise: YouTube, Google Drive, Vimeo, Zoom, Rumble, Twitch, Facebook, LinkedIn, Twitter/X, Loom, Riverside, StreamYard.
+   - We already download with yt-dlp (see core/downloader.py) and accept local uploads.
+
+B. Understand the whole video, then pick moments
+   - Speech: transcribe with word timestamps (we use faster-whisper).
+   - Group words into sentences. A clip is a contiguous sentence range, not a random time window.
+   - Score each candidate on four things Opus-style editors care about:
+       hook  = first line stops the scroll (claim, question, number, conflict, emotion)
+       flow  = a stranger understands it and it ends on a conclusion, not mid-thought
+       value = story, insight, humor, or emotion
+       trend = energy, pace, and whether it feels like a short
+   - Audio loudness spikes (laughter, shouts) and, when speech is thin, visual motion (cuts, action) are extra signals. Opus markets "ClipAnything" for vlogs, gaming, sports, interviews — not only podcasts. Our highlights / energy path is the local version of that.
+   - An LLM (Gemini or Groq) reads the numbered transcript and returns sentence ranges + titles. Heuristics are the fallback when there is no API key. The LLM is NOT shown the video pixels today. That is acceptable for talking videos. Visual-only videos use motion/energy.
+
+C. Reframe
+   - 16:9 source becomes 1080x1920.
+   - Face detection (YuNet) chooses fill (follow the face), fit (full frame on a blurred background), split (two people), or gameplay (face on top, screen below).
+   - Opus calls this ReframeAnything. Ours is OpenCV sampling every 0.5s, not a learned tracker. Good enough; do not claim pixel-perfect tracking.
+
+D. Finish
+   - Karaoke captions burned in (ASS).
+   - Thumbnail, MP4, SRT.
+   - YouTube title/description and Instagram caption. Nothing is posted.
+
+E. What we will not build unless the user asks
+   - Accounts, payments, team workspaces, brand-template editor, one-click publish to YouTube/Instagram/TikTok, trend-scraping "big data", manual timeline editor.
+
+================================================================================
+HOW TO RUN
+================================================================================
+From C:\Users\Sammy\Desktop\yt\clipcraft:
+
+    python server.py
+
+Open http://127.0.0.1:5003
+Port override: set CLIPCRAFT_PORT.
+The server refuses non-localhost hosts and cross-site POSTs. Keep that.
+
+Dependencies already imported (no requirements.txt yet — adding one is still to do):
+    flask, requests, numpy, opencv-python (cv2), imageio-ffmpeg, yt-dlp, faster-whisper, ctranslate2
+Optional: torch (CUDA DLLs for faster-whisper on NVIDIA). Node at C:\Program Files\nodejs\node.exe helps yt-dlp on YouTube.
+
+AI keys (optional, stored in settings.json — NEVER print or commit real keys):
+    Settings UI, or environment variables GEMINI_API_KEY / OPENAI_API_KEY / GROQ_API_KEY.
+    settings.json currently has an EMPTY gemini_api_key, so jobs fall back to heuristics.
+    Default Gemini model name in code: gemini-3.5-flash-lite. If that model 404s, the user must put a real model id in Settings (for example a current Gemini Flash model). Do not invent a key.
+
+YouTube "confirm you're not a bot": Settings → Download cookies → chrome or edge.
+
+Test source already used: https://www.youtube.com/watch?v=arj7oStGLkU (TED talk, Tim Urban on procrastination). Downloads may already be in downloads/.
+
+================================================================================
+ARCHITECTURE MAP
+================================================================================
+server.py
+    Flask routes. Validates URL host, options, uploads. Job API. Settings. Social package.
+    POST /api/clip  {url or video_file, crop_mode, focus, target_clips, min/max duration, range, captions, prompt, language}
+    GET  /api/jobs/<id>   poll this
+    GET  /api/video-info?url=
+    GET/POST /api/settings
+
+core/pipeline.py
+    download → extract wav → whisper → sentences → energy (+ motion if sparse speech or focus=highlights)
+    → find_viral_moments → render each clip → append to job JSON as it finishes.
+
+core/virality_engine.py
+    THE moment picker. Heuristic candidate search, LLM picker, energy/visual fallback.
+    find_viral_moments() is the only entry point.
+
+core/llm.py
+    Gemini generateContent or OpenAI-compatible /chat/completions. JSON only.
+
+core/transcriber.py
+    faster-whisper, word timestamps, disk cache downloads/transcript_*.json
+
+core/downloader.py
+    yt-dlp + ffmpeg audio extract. Local file path is also a valid source.
+
+core/face_tracker.py
+    YuNet or Haar. analyze_video_speakers() picks layout. activity_profile() for motion.
+
+core/renderer.py
+    ffmpeg filter graph. 1080x1920. NVENC if present else libx264.
+    Layouts: fill (default crop+track), fit, split, gameplay. auto uses face_tracker mode.
+
+core/subtitle_engine.py
+    Karaoke ASS.
+
+core/publisher_engine.py
+    Social copy from clip fields. No network publish.
+
+core/branding_engine.py
+    Optional text watermark.
+
+core/jobs.py
+    JSON files in jobs/. One background worker thread. A job left "processing" by a dead server is marked failed on next load.
+
+core/config.py
+    Paths, settings.json, 1080x1920, ffmpeg from imageio_ffmpeg.
+
+templates/index.html + static/app.js + static/style.css
+    Studio (link or upload), direction (focus, framing, count, length, captions), job progress, clip cards, projects, settings dialog, social copy dialog.
+    JS polls /api/jobs/<id>. Clips appear as each render finishes.
+
+jobs/*.json          persisted projects
+outputs/             rendered mp4, jpg, srt, ass
+downloads/           source video, wav, transcript cache
+uploads/             user file uploads
+
+================================================================================
+KNOWN QUALITY BUG (must stay fixed)
+================================================================================
+Job jobs/eeab9da087.json completed with engine fallback (no AI key) and produced bad hooks:
+
+    clip 1 title: "Anyway, today I'm a writer, blogger, guy."
+    clip 2 title: "A less pleasant place, but where really important things happen."
+    both reasons: "Self-contained story with a clean beginning and ending."
+
+Cause: _heuristic_clips() correctly skips weak openings, then if it cannot fill `target` it calls _heuristic_clips_relaxed(), which dropped the weak-open check. "Anyway..." matches FILLER_START and should never be a clip start. "A less pleasant place..." is a continuation (referential / no hook) and scored well only because flow outweighed hook.
+
+Required behavior:
+    - Never start a speech clip on filler (um, so, anyway, welcome, thank you) or on a pronoun/this/that sentence that needs the previous line.
+    - Titles come from the sharpest line in the range (_headline), not the weak first sentence.
+    - Relaxed mode may relax "previous sentence must be terminal" and the hook>=68 gate. It must NOT relax the weak opening.
+    - If the strict pass finds fewer clips than requested, return the good ones. Do not pad with bad openings.
+    - When an AI key exists, LLM ranges still pass through _fit_bounds and the weak-open reject in _llm_clips.
+
+A code fix for the relaxed-path weak opening was started on 2026-11-19. Verify it, and add a tiny unit-style check if you touch this file again: a sentence starting with "Anyway" must not be chosen when a later strong sentence exists.
+
+================================================================================
+STILL TO DO (in this order)
+================================================================================
+1. Verify the weak-open fix in core/virality_engine.py. Re-run moment selection on the cached transcript downloads/transcript_*.json for the TED talk WITHOUT re-downloading, and confirm titles are real hooks (procrastination / Panic Monster / instant gratification monkey), not "Anyway".
+
+2. Settings reality check.
+   - settings.json gemini key is empty. UI must make it obvious that clips are heuristic until a key is saved.
+   - If gemini-3.5-flash-lite is not a valid model for the user's key, surface the Gemini error in the job warning (already partially done via LLMError → warning string). Do not crash the job; heuristic fallback must remain.
+
+3. Clip cards should feel like a clipping studio, not a debug dump.
+   - Already has score, hook, reason, transcript, download, social copy.
+   - Missing vs Opus: a one-line "virality" label the user understands, and the opening line visible without expanding details. Do not invent fake view predictions. Keep the existing disclaimer that scores are editorial estimates.
+
+4. Add requirements.txt with the imports listed above so a new machine can install the app. Do not pin secrets. Do not add a README unless asked; this handoff file is the project notes.
+
+5. Browser-check the running app on http://127.0.0.1:5003 :
+   - Home form, link vs upload tabs, settings dialog open/save, projects list, open the existing completed job and play a clip if the mp4 is still in outputs/.
+   - Fix any broken UI you actually see. Do not restyle the whole site for taste.
+
+6. Do not delete downloads/, outputs/, or jobs/ unless the user asks. They are the test evidence.
+
+7. Optional, only after 1–5: let the user trim a chosen clip's start/end by a few seconds and re-render that one clip. Opus has an editor; we do not. A small "nudge start/end and re-render" is the highest-value editor feature. Skip team accounts, scheduling, and auto-posting.
+
+================================================================================
+CONSTRAINTS
+================================================================================
+- Windows, PowerShell. User rules: do not git commit unless asked. Do not force-push. Do not change git config.
+- Localhost only. Keep the before_request guard in server.py.
+- Do not send video bytes to an AI API. Only transcript text goes to Gemini/Groq, and only when a provider is configured.
+- Do not put API keys in this file, in logs, or in chat.
+- Captions and crops can be wrong. The UI already tells the user to review before posting. Keep that.
+- Max upload 2 GB. Clip count 1–12. Duration 10–180 seconds.
+
+================================================================================
+STATUS LOG (append; do not erase)
+================================================================================
+2026-11-19  Agent inspected Opus homepage (public marketing only) and the local ClipCraft tree. Pipeline, UI, renderer, and heuristic/LLM pickers already exist. Latest completed job eeab9da087 used heuristics (empty Gemini key) and saved weak openings. Handoff file created.
+2026-11-19  Fixed moment picking in core/virality_engine.py:
+    - Relaxed fallback no longer accepts filler or continuation openings ("Anyway", "A less pleasant place", "There's also", "I write the blog").
+    - Leading "Now," / "So," / "And," is ignored when judging the real sentence, so "Now, the Panic Monster..." can be a hook.
+    - Titles prefer a named idea or a question over the first weak line.
+    - Re-scored cached TED transcript (downloads/transcript_21030816410dd934.json) with no API key. Four clips, none start on "Anyway". Topics that came out: the monkey taking the wheel, the MRI brain scan, the guardian-angel / Panic Monster turn, and the dark-place question. Old job eeab9da087 was NOT re-rendered; its mp4s still show the old cuts. A new project is required to see the new selection.
+    - Home page says when Settings has no AI key. Clip cards label the opening line "Opens on".
+    - Added requirements.txt.
+    Still open: browser pass on the live page; user still needs a Gemini or Groq key in Settings for the LLM picker; optional per-clip trim/re-render was not built.
+2026-11-19  (Devin session) Verified on the user's machine:
+    - All dependencies import. GPU is a GTX 1650 (4 GB). yt-dlp 2026.10.26. Server starts with `python server.py` and writes to server.log when started by the agent.
+    - /api/health and /api/video-info work; the old "Invalid js_runtimes format" failure (job 5fd717457a) no longer reproduces.
+    - New job deaf9aefec on the cached TED talk (3 clips, no AI key, engine=heuristic) completed. Clips: MRI brain scan (201.5s), monkey takes the wheel (251.7s), TED deadline story (511.7s). A frame from clip_1 shows correct 9:16 face-centred crop with karaoke captions.
+    - Known weakness seen: heuristic titles can start with "And"/"So" and are just a truncated sentence. To be cleaned.
+    In progress next: per-clip trim (nudge start/end) + re-render (API + UI), a fresh non-cached YouTube download test, browser pass. LLM path is still untested because no key is saved.
+2026-11-19  (Devin session) Built and verified:
+    - Per-clip trim + re-render (STILL TO DO item 7). POST /api/jobs/<job_id>/clips/<clip_id>/trim with JSON {start_shift, end_shift} in seconds (-30..30, result must be 5..180s). server.py trim_clip() queues core/pipeline.py rerender_clip() on the normal worker; the job goes queued -> processing -> completed again. The new file is <job>_<clip>_t<N>.mp4 (trim_rev in the clip JSON) and the old files are deleted. On failure the old clip is kept and job.warning explains. core/jobs.py got replace_clip(). pipeline.py got a shared _transcript() helper (cached audio + Whisper).
+    - UI: each clip card has an "Adjust start / end" section (templates/index.html clipTemplate, trimClip() in static/app.js, .trim-* in static/style.css). Re-render buttons are disabled while the job is running.
+    - Heuristic titles drop a leading And/So/But/Now/Well/Because (_headline in core/virality_engine.py). Only affects new projects.
+    - Tested: trim via API on deaf9aefec clip_1 (+2s start, -5s end) and via the real UI in headless Chrome on clip_3 (+1.5s end): video src switched to _t1, duration updated. Fresh non-cached YouTube job 7b29feb913 (TED-Ed "Try something new for 30 days", 2 clips) downloaded, transcribed and rendered. Browser pass (home page, project page, 3 clip cards, videos load): only console error is a missing favicon.ico.
+    Still open:
+    - LLM picker (Gemini / Groq) is still untested: no key is saved in Settings.
+    - Slide/cartoon shots with no face are centre-cropped ("fill"), which can cut off slide content (seen in deaf9aefec clip_2). Consider choosing "fit" in core/face_tracker.py when no face is found for most of a clip.
+    - Heuristic titles are still a sentence from the clip, not a written headline; a real title needs the LLM.
+    - No favicon.
+
+--- Status update: 2026-11-19 ~15:50 IST (LLM path verified) ---
+- Gemini key saved by the user's request via POST /api/settings (stored in local settings only;
+  never write it here). llm_provider = gemini, model gemini-3.5-flash-lite.
+  /api/settings now reports engine "Gemini · gemini-3.5-flash-lite".
+- LLM picker TESTED: job 32dce0416d (TED talk arj7oStGLkU, 4 clips requested) completed with
+  engine "ai", no warning, 4 clips with written headlines and reasons. No code change was needed.
+- The second key the user supplied as a "Groq" key (sk-...) is rejected by api.groq.com (401,
+  Groq keys start with gsk_). It was NOT saved. openai_compatible settings are unchanged.
+- FreeLLMAPI: user wants to use their FreeLLMAPI gateway. ClipCraft already supports it through
+  Settings -> OpenAI-compatible (base URL ending /v1, model id, gateway key). The gateway was not
+  found running locally; port 20128 is OmniRoute (needs its own key). Needs base URL + key from user.
+Still open: no-face slide framing ("fit" fallback), favicon.
+
+--- Status update: 2026-11-19 ~16:00 IST (CONFLICT - app currently does not start) ---
+- At 15:55-15:56 another tool (not Devin; opencode-cli and codex are running on this PC)
+  overwrote core/config.py (now 32 lines, no load_settings/save_settings/public_settings/
+  DEFAULT_SETTINGS) and core/virality_engine.py (now 253 lines, old urllib/Gemini-2.0 design).
+  server.py, core/llm.py, core/pipeline.py still expect the previous versions, so
+  `python server.py` fails with: ImportError: cannot import name 'load_settings' from 'core.config'.
+  The project is not a git repo, so the previous versions cannot be restored from history.
+  Devin stopped editing and asked the user which agent should own the project.
+- Before the overwrite: Gemini picker verified (job 32dce0416d). core/llm.py now (a) retries any
+  HTTP 400 from an OpenAI-compatible provider without response_format, and (b) complete_json()
+  falls back to the other configured provider before heuristics. Both untested after the overwrite.
+- Provider findings (keys are in settings.json only, never here):
+  * Groq free tier: 8000 tokens/min on openai/gpt-oss-120b; llama-3.3-70b-versatile is not offered
+    to this account. Too small for a 40k-char transcript chunk -> HTTP 429. Not suitable as is.
+  * IteraCompute: base https://api.iteracompute.com/v1, model qwen/qwen3.8-27b, key works,
+    JSON mode works. Their docs say the free promotion ends 2026-11-24.
+  * FreeLLMAPI gateway appears to be http://127.0.0.1:31415/v1 (from the overwritten config.py).
+  * Kilo Gateway / OVH AI Endpoints (keyless): requested by user, not yet checked.
+
+--- Status update: 2026-11-19 ~16:25 IST (files recovered, multi-engine AI fallback) ---
+- core/config.py and core/virality_engine.py were RECOVERED (the 15:55 overwrite by another agent
+  was undone) by replaying the Write/Edit history in the earlier Qoder + Cursor agent logs
+  (~/.qoder/projects/C--Users-Sammy-Desktop-yt-clipcraft/*.jsonl and
+  ~/.cursor/projects/c-Users-Sammy-Desktop-yt-clipcraft/agent-transcripts/*). 44/44 and 2/2 edits
+  applied cleanly; Devin's _headline() conjunction cleanup was re-applied.
+  Copies: ../clipcraft_recovered/ (recovered files), ../clipcraft_backup_devin_1601/ (the
+  overwritten state, incl. the other agent's config.py). Safe to delete both once happy.
+- NEW: ordered AI engine chain (core/llm.py _chain/complete_json). Order:
+  1) llm_provider (gemini), 2) the other built-in slot (openai_compatible = FreeLLMAPI local
+  gateway http://127.0.0.1:31415/v1, model "auto"), 3) settings["fallback_providers"], a JSON
+  string list of {name, base_url, model, api_key} in settings.json:
+  IteraCompute (api.iteracompute.com/v1, qwen/qwen3.8-27b), OVH (oai.endpoints.kepler.ai.cloud.ovh.net/v1,
+  gpt-oss-120b, keyless), Kilo (ai-gateway.kilo.ai/api/v1, kilo-auto/free, keyless, 200 req/h/IP).
+  Each engine that errors (HTTP error, bad JSON) falls through to the next; only if all fail does
+  the job use heuristics (warning lists each engine's error). fallback_providers is never sent to
+  the browser and cannot be set via POST /api/settings (edit settings.json directly).
+  /api/health engine label: "Gemini · gemini-3.5-flash-lite (+4 fallback engines)".
+- Groq was removed from the chain: its free tier allows 8000 tokens/min, smaller than one
+  transcript request (HTTP 429). Key still not needed.
+- Verified on a real 157-sentence transcript: Gemini OK (6 s), OVH OK (144 s), Kilo OK (69 s).
+  FreeLLMAPI "auto" and IteraCompute returned temporary upstream 502/503/429 errors during testing.
+  Forced fallback (bad Gemini key) -> answered by FreeLLMAPI. Full job 2465e4febe (UNP03fDSj1U,
+  fresh server) completed, engine ai, 2 clips, no warning.
+Still open: no-face slide framing ("fit" fallback), favicon, Settings UI cannot edit the fallback list.
+- Retest 16:22: FreeLLMAPI "auto" OK (47 s, 3 clips). Its earlier 502 was transient.
+
+--- Status update: 2026-11-19 ~17:15 IST (remaining open items closed) ---
+- fit fallback VERIFIED in production: job 8ded59ed04 (GTA 6 livestream, 11.6 h, YouTube
+  auto-captions, 14820 sentences) completed engine=ai with 10 clips; 8 rendered layout "fit"
+  (no-face gameplay/slide content) and 2 "fill". The analyze_video_speakers() face_ratio<0.4
+  -> "fit" path in core/face_tracker.py works as intended.
+- Huge-transcript stress test passed: 601k-char prompt part was answered by Kilo
+  (kilo-auto/free, 119 s) after Gemini 503 / FreeLLMAI 502 / IteraCompute 400 / OVH
+  context-length 400. The 16:48 edits (max_prompt_chars 600k->100k, parallel chunk asks,
+  per-chunk failure tolerance in core/llm.py + core/virality_engine.py) are live: the
+  server (PID started 16:49:02) loaded them.
+- Old duplicate job 4012b9f77d stays "failed" (server restart mid-render); its retry
+  8ded59ed04 succeeded. Left in place per no-delete rule.
+- Added inline SVG favicon (was the only console error) and a settings-dialog hint
+  explaining that fallback_providers lives in settings.json (deliberately not editable
+  in the UI because it holds API keys).
+- Verified live: /, /static/*, /api/health, /api/video-info, /video/*.mp4 (13 MB),
+  /media/*.jpg, /download/*.srt all 200. No code paths changed besides the two HTML edits.
+Still open: nothing required. Optional future work: per-provider context sizing instead of
+the flat 100k chars, and a UI for fallback_providers if the user accepts keys in the browser.
+
+--- Status update: 2026-11-19 ~18:05 IST (preview-first flow + speed work) ---
+- TWO server.py processes were running at once (PIDs from 15:04 and 16:49); the stale one ran
+  pre-recovery code. Killed the old one. If jobs act weird, check for duplicate servers first.
+- PREVIEW-FIRST FLOW (user request): jobs no longer render clips automatically.
+  run_clipcraft_pipeline now ends after find_viral_moments + _preview_frames(): one thumbnail
+  per clip (remote.preview_frame = single ffmpeg frame via HTTP range on the stream URL;
+  downloader.grab_thumbnail for local files), clips appended with thumb_url + preview=true,
+  job completes with "Render the clips you want". NO clip footage is downloaded until asked.
+- On-demand render: POST /api/jobs/<id>/clips/<clip_id>/render -> pipeline.render_pending_clip;
+  POST /api/jobs/<id>/render-all -> render_all_pending (ThreadPoolExecutor, 3 workers, same
+  as the old auto-render). Words come from downloads/words_<job>.json (_clip_words), with a
+  caption re-pull fallback for remote jobs. Clip keeps title/scores; rendered fields merge in.
+- Clip duration defaults are now 25s min / 60s max (server._options + index.html input).
+- Speed: section downloads in remote_source.download_section use h264_nvenc (x264 fallback on
+  nvenc errors); fetch_info result is passed into download_section instead of re-fetching per
+  clip. core/llm.py: engines that fail on transport/HTTP errors get a 10-min cooldown so dead
+  gateways don't burn a timeout per transcript chunk; request timeout 300s -> 180s.
+- BUGFIX: core/jobs.py _persist now retries os.replace on PermissionError (Windows AV/indexer
+  briefly locks jobs/*.json; it killed a render mid-flight once).
+- UI: clip cards show the preview frame + a "Render clip" button when video_file is absent;
+  "Render all" button appears in the results header while previews are pending; trim controls
+  hide until a clip is rendered. app.js renderClip()/renderAllClips(), .clip-preview/.results-
+  actions in style.css.
+- Verified live: job 38ba37d8b3 (TED talk, engine=ai) completed with 2 preview clips and no
+  video in ~90 s. POST .../clips/clip_1/render produced 38ba37d8b3_clip_1.mp4 (55.8 s, fit
+  layout, 13.7 MB) + jpg/srt/ass; /video/ serves it (206). clip_2 remains a preview.
+Still open: UI not yet browser-tested after the preview changes; old completed jobs still show
+rendered clips (render buttons correctly hidden for them).
+
+--- Status update: 2026-11-19 ~22:25 IST (Full Opus clipping studio flow & responsive styling fixed) ---
+- Fixed clipping pipeline flow: run_clipcraft_pipeline now executes the entire Opus flow seamlessly:
+  fetch/ingest -> transcribe/captions -> AI moment detection with virality scoring -> auto-render all clips
+  in parallel. Progress advances 0 -> 20 -> 50 -> 60 -> 100%. Job only marks completed once all clips are rendered.
+- Next.js rewrites added in next.config.ts for /video/*, /media/*, /download/*, /api/* pointing to 127.0.0.1:5004.
+  Fixes 404s on in-browser vertical video playback, thumbnail previews, and file downloads.
+- Rebuilt JobView.tsx to match Opus Clip Studio:
+  * 9:16 vertical video player embedded directly in each card with HTML5 controls.
+  * Virality Score badge with high/med/low color coding (80+ neon lime, 65-79 cyan, <65 amber).
+  * Opus 'Why this moment?' breakdown with Hook, Flow, Value, Trend progress bars and reasoning.
+  * Opening Hook callout ("OPENS ON: ...") and full transcript accordion.
+  * Direct 1-click downloads for MP4 and SRT subtitles.
+  * Added SocialModal.tsx for 1-click copying of YouTube Shorts title/description and Instagram Reels/TikTok copy.
+  * Interactive Re-edit panel for layout (all 11 options), caption style (Bold, Clean, Minimal, Pop), caption color, and time trim.
+  * Star rating (1-5) directly connected to the local feedback regression loop from neonclipping.
+- Fixed non-English / Hindi hook filter in core/virality_engine.py: _weak_open no longer rejects non-English or Hinglish sentences.
+- Polished globals.css with complete responsive support across desktop (>1080px: 3 cols), tablet (768-1080px: 2 cols), and mobile (<768px: 1 col, touch-friendly hit areas).
+- Restarted Flask server (5004) with latest code. Next.js (3000) TypeScript passes 0 errors. All 4 clips of job a7a93e73de fully rendered.

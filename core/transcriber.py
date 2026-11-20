@@ -38,10 +38,19 @@ def _load_model(size: str, device: str):
         return _MODEL_CACHE[key]
 
 
-def _run(model, audio_path, language, progress_callback):
+# Steers Whisper toward Hindi+English speech; the Devanagari output is then
+# transliterated to casual Hinglish (Roman letters) word-by-word.
+HINGLISH_PROMPT = ("यह हिंदी और अंग्रेज़ी में गेमिंग वीडियो है। GTA, गेमप्ले, क्लिपिंग, वीडियो, टूल। "
+                   "Aaj hum gaming ke baare mein baat karenge.")
+
+
+def _run(model, audio_path, language, progress_callback, initial_prompt=None):
+    whisper_language = "hi" if language == "hinglish" else language
+    prompt = initial_prompt or (HINGLISH_PROMPT if language == "hinglish" else None)
     segments_gen, info = model.transcribe(
         audio_path,
-        language=language or None,
+        language=whisper_language or None,
+        initial_prompt=prompt,
         beam_size=5,
         word_timestamps=True,
         vad_filter=True,
@@ -60,11 +69,16 @@ def _run(model, audio_path, language, progress_callback):
         segments.append({"start": round(seg.start, 2), "end": round(seg.end, 2), "text": seg.text.strip()})
         if progress_callback:
             progress_callback(min(100.0, seg.end / total * 100))
+    if language == "hinglish":
+        from .translit import to_hinglish
+        for w in words:
+            w["word"] = to_hinglish(w["word"])
     return {"language": info.language, "duration": info.duration, "segments": segments, "words": words}
 
 
 def transcribe(audio_path: str, model_size: str = "small", language: str = None,
-               offset: float = 0.0, progress_callback=None, cache_key: str = None) -> dict:
+               offset: float = 0.0, progress_callback=None, cache_key: str = None,
+               initial_prompt: str = None) -> dict:
     """Word-level transcript. Timestamps are shifted by `offset` so they match the source video."""
     cache_path = None
     if cache_key:
@@ -76,12 +90,12 @@ def transcribe(audio_path: str, model_size: str = "small", language: str = None,
 
     device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
     try:
-        result = _run(_load_model(model_size, device), audio_path, language, progress_callback)
+        result = _run(_load_model(model_size, device), audio_path, language, progress_callback, initial_prompt)
     except RuntimeError as e:
         if device != "cuda":
             raise
         print(f">> [Whisper] GPU failed ({e}); retrying on CPU")
-        result = _run(_load_model(model_size, "cpu"), audio_path, language, progress_callback)
+        result = _run(_load_model(model_size, "cpu"), audio_path, language, progress_callback, initial_prompt)
 
     if offset:
         for w in result["words"]:
@@ -97,10 +111,10 @@ def transcribe(audio_path: str, model_size: str = "small", language: str = None,
     return result
 
 
-_TERMINAL = re.compile(r"[.!?…]+[\"')\]]*$")
+_TERMINAL = re.compile(r'[.!?…]+[\'")\]]*$')
 
 
-def build_sentences(words: list, max_words: int = 45, gap_break: float = 1.2) -> list:
+def build_sentences(words: list, max_words: int = 30, gap_break: float = 0.9) -> list:
     """Groups words into sentences using punctuation and pauses. Each sentence keeps word index bounds."""
     sentences, cur = [], []
 
@@ -118,12 +132,12 @@ def build_sentences(words: list, max_words: int = 45, gap_break: float = 1.2) ->
             cur.clear()
 
     for i, w in enumerate(words):
-        if cur and w["start"] - words[cur[-1]]["end"] > gap_break:
-            flush(False)
+        if cur and w["start"] - words[cur[-1]]["end"] >= gap_break:
+            flush(True)
         cur.append(i)
         if _TERMINAL.search(w["word"]):
             flush(True)
         elif len(cur) >= max_words:
             flush(False)
-    flush(False)
+    flush(True)
     return sentences

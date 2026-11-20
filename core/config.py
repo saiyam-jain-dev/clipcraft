@@ -28,14 +28,15 @@ DEFAULT_BRAND_NAME = "ImSamxyy"
 
 DEFAULT_SETTINGS = {
     "brand_name": DEFAULT_BRAND_NAME,
-    # "gemini" | "openai_compatible" | "none"
-    "llm_provider": "gemini",
+    # Fast hosted model via Groq's OpenAI-compatible API. Add a GROQ_API_KEY
+    # environment variable or paste the key in Studio Settings.
+    "llm_provider": "openai_compatible",
     "gemini_api_key": "",
     "gemini_model": "gemini-3.5-flash-lite",
     # Any OpenAI-compatible endpoint: Groq, OpenRouter, Ollama, LM Studio, OpenAI
     "openai_base_url": "https://api.groq.com/openai/v1",
     "openai_api_key": "",
-    "openai_model": "llama-3.3-70b-versatile",
+    "openai_model": "openai/gpt-oss-120b",
     # JSON list of extra OpenAI-compatible engines tried after the two above, in order:
     # [{"name": "...", "base_url": "https://.../v1", "model": "...", "api_key": ""}]. Edit in settings.json.
     "fallback_providers": "",
@@ -47,6 +48,10 @@ DEFAULT_SETTINGS = {
     "proxy_port": "",
     "proxy_user": "",
     "proxy_pass": "",
+    # Optional Kaggle / Remote Dual-GPU Worker (e.g. Cloudflare tunnel URL https://...trycloudflare.com)
+    "remote_worker_url": "",
+    # "true" disables local GPU fallback when the user wants to keep this machine idle.
+    "remote_render_required": "false",
 }
 SECRET_KEYS = ("gemini_api_key", "openai_api_key", "proxy_pass")
 

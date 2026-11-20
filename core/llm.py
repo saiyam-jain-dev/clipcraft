@@ -2,6 +2,7 @@ import re
 import json
 import requests
 import time
+import threading
 
 
 class LLMError(RuntimeError):
@@ -84,7 +85,7 @@ def _gemini(prompt: str, system: str, settings: dict) -> str:
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.4, "responseMimeType": "application/json"},
     }
-    r = requests.post(url, json=body, headers={"x-goog-api-key": settings["gemini_api_key"]}, timeout=180)
+    r = requests.post(url, json=body, headers={"x-goog-api-key": settings["gemini_api_key"]}, timeout=45)
     if r.status_code != 200:
         raise LLMError(f"Gemini HTTP {r.status_code}: {r.text[:300]}")
     data = r.json()
@@ -105,6 +106,12 @@ def _openai_compatible(prompt: str, system: str, settings: dict) -> str:
         "response_format": {"type": "json_object"},
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
     }
+    # Clip ranking is a bounded selection task, so use Groq's low reasoning
+    # effort for GPT-OSS: keep the model's stronger judgment without spending
+    # time on deep chain-of-thought reasoning. Do not send this extension to
+    # other OpenAI-compatible hosts.
+    if "api.groq.com" in settings["openai_base_url"] and settings["openai_model"].startswith("openai/gpt-oss-"):
+        body["reasoning_effort"] = "low"
     proxies = None
     if not settings.get("openai_api_key") and settings.get("proxy_host") and settings.get("proxy_port"):
         user = settings.get("proxy_user", "")
@@ -116,12 +123,12 @@ def _openai_compatible(prompt: str, system: str, settings: dict) -> str:
             }
     if proxies:
         print(f"[llm] Using proxy for keyless request: {settings['proxy_host']}:{settings['proxy_port']}")
-    r = requests.post(url, json=body, headers=headers, proxies=proxies, timeout=180)
+    r = requests.post(url, json=body, headers=headers, proxies=proxies, timeout=45)
     if r.status_code == 400:
         # JSON mode unsupported, or the provider rejected its own output (Groq json_validate_failed):
         # retry as plain text and parse the JSON ourselves.
-        body.pop("response_format")
-        r = requests.post(url, json=body, headers=headers, proxies=proxies, timeout=180)
+        body.pop("response_format", None)
+        r = requests.post(url, json=body, headers=headers, proxies=proxies, timeout=45)
     if r.status_code != 200:
         raise LLMError(f"LLM HTTP {r.status_code}: {r.text[:300]}")
     return r.json()["choices"][0]["message"]["content"]
@@ -142,28 +149,58 @@ def _transport_error(e: Exception) -> bool:
     return isinstance(e, requests.RequestException) or (isinstance(e, LLMError) and "HTTP" in str(e))
 
 
-def complete_json(prompt: str, system: str, settings: dict, log=None) -> dict:
+def complete_json(prompt: str, system: str, settings: dict, log=None, budget: float = 22) -> dict:
     log = log or (lambda msg, level="info": None)
-    errors = []
     chain = _chain(settings)
+    if not chain:
+        raise LLMError("No AI engine is configured")
     active = [s for s in chain if time.monotonic() >= _engine_cooldown.get(_label(s), 0)]
-    for s in active or chain:
+    engines = active or chain
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+    errors = []
+    stop_event = threading.Event()
+
+    def ask_single(engine):
+        s = engine
         call = _gemini if s["llm_provider"] == "gemini" else _openai_compatible
         started = time.monotonic()
-        log(f"Asking {_label(s)} for moments ({len(prompt):,} characters of transcript)...")
+        if not stop_event.is_set():
+            log(f"Asking {_label(s)} ({len(prompt):,} characters)...")
         try:
             data = _parse_json(call(prompt, system, s))
-            log(f"{_label(s)} answered in {time.monotonic() - started:.0f} s")
+            if not stop_event.is_set():
+                log(f"{_label(s)} answered in {time.monotonic() - started:.0f} s")
             return data
         except (LLMError, requests.RequestException, ValueError, KeyError, IndexError, TypeError) as e:
             if _transport_error(e):
                 cooldown = _RATE_LIMIT_COOLDOWN_SECONDS if _is_rate_limit(e) else _COOLDOWN_SECONDS
                 _engine_cooldown[_label(s)] = time.monotonic() + cooldown
-                log(f"{_label(s)} skipped for {cooldown // 60} min after failing", "warn")
+                if not stop_event.is_set():
+                    log(f"{_label(s)} skipped for {cooldown // 60} min after failing", "warn")
             errors.append(f"{_label(s)}: {str(e)[:140]}")
             print(f"[llm] {errors[-1]}")
-            log(f"{_label(s)} failed after {time.monotonic() - started:.0f} s: {str(e)[:300]}", "error")
-    raise LLMError(" | ".join(errors) or "No AI engine is configured")
+            if not stop_event.is_set():
+                log(f"{_label(s)} failed after {time.monotonic() - started:.0f} s: {str(e)[:300]}", "error")
+            return None
+
+    # Try providers in parallel and return the first valid response before the deadline.
+    pool = ThreadPoolExecutor(max_workers=min(len(engines), 4))
+    futures = {pool.submit(ask_single, s): s for s in engines}
+    try:
+        for fut in as_completed(futures, timeout=budget):
+            result = fut.result()
+            if result is not None:
+                stop_event.set()
+                pool.shutdown(wait=False, cancel_futures=True)
+                return result
+    except TimeoutError:
+        stop_event.set()
+        log(f"AI models exceeded {budget:.0f}s budget, using the local moment ranker.", "warn")
+    finally:
+        stop_event.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+    raise LLMError(" | ".join(errors) or f"No AI engine responded within {budget:.0f} seconds")
 
 
 def complete_json_parallel(prompts, system, settings, log=None):

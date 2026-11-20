@@ -1,24 +1,54 @@
 # Python
 __pycache__/
 *.py[cod]
-*.egg-info/
+*$py.class
+*.so
+.Python
 .venv/
 venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
 
-# Local settings & secrets — never commit real API keys
+# ClipCraft specific
 settings.json
 .env
-.env.*
-!.env.example
-
-# Runtime data
+.env.local
 downloads/
-uploads/
 outputs/
+uploads/
 jobs/
-bin/
 *.log
-*.tmp
+*.err.log
 
-# Local agent notes
-AGENT_HANDOFF.txt
+# Test files
+test_*.mp4
+test_*.jpg
+test_*.txt
+test_request.json
+
+# Next.js
+nextjs-frontend/.next/
+nextjs-frontend/node_modules/
+nextjs-frontend/*.log
+nextjs-frontend/.vercel
+nextjs-frontend/.turbo
+nextjs-frontend/next-env.d.ts
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.docker/
+
+# Kaggle (large files)
+kaggle/*.ipynb

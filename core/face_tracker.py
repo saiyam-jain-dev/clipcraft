@@ -54,15 +54,16 @@ def analyze_video_speakers(video_path: str, start_sec: float, end_sec: float, sa
         cap.release()
 
     face_samples = [s for s in samples if s["faces"]]
-    # Split only when two faces are present simultaneously, not when a solo speaker moves across frame.
+    # Split only when two distinct faces are present across most of the video (> 65%),
+    # separated by at least 35% of the frame width (e.g. podcast dual interview setup).
     dual = sum(1 for s in face_samples if len(s["faces"]) >= 2
-               and abs(s["faces"][0][0] - s["faces"][1][0]) > width * 0.25)
-    # Crop to a face only when a real-sized face is on screen for most of the clip; slides, screen
-    # recordings and cartoons with an occasional (or falsely detected) face are shown whole instead.
+               and abs(s["faces"][0][0] - s["faces"][1][0]) > width * 0.35)
     framed = sum(1 for s in face_samples if s["faces"][0][2] >= width * 0.04)
     face_ratio = framed / len(samples) if samples else 0.0
-    selected = ("split" if face_samples and dual / len(face_samples) > 0.35
-                else "fill" if face_ratio >= 0.4 else "fit")
+    # In auto mode, prefer 'fill' (focused vertical face tracking) or 'fit' (clean letterbox with blurred bg)
+    # unless two distinct separated podcast speakers are persistently present (> 65% of total frames).
+    selected = ("split" if len(samples) and dual / len(samples) >= 0.65 and face_ratio >= 0.5
+                else "fill" if face_ratio >= 0.35 else "fit")
     return {"mode": selected, "face_ratio": round(face_ratio, 2), "frame_width": width, "frame_height": height,
             "samples": samples}
 
@@ -106,13 +107,20 @@ def crop_trajectory(info: dict, crop_w: int, crop_h: int, which="primary") -> li
     last_face_time = -10
     for sample in info["samples"]:
         faces = sample["faces"]
+        face = None
         if faces:
             if which == "left":
-                face = min(faces, key=lambda b: b[0] + b[2] / 2)
+                # Only consider faces strictly on the left half of the video frame
+                left_faces = [f for f in faces if (f[0] + f[2] / 2) < w * 0.52]
+                face = min(left_faces, key=lambda b: b[0] + b[2] / 2) if left_faces else None
             elif which == "right":
-                face = max(faces, key=lambda b: b[0] + b[2] / 2)
+                # Only consider faces strictly on the right half of the video frame
+                right_faces = [f for f in faces if (f[0] + f[2] / 2) > w * 0.48]
+                face = max(right_faces, key=lambda b: b[0] + b[2] / 2) if right_faces else None
             else:
                 face = faces[0]
+
+        if face is not None:
             tx = face[0] + face[2] / 2
             ty = face[1] + face[3] / 2 + crop_h * 0.18
             last_face_time = sample["t"]
@@ -120,6 +128,7 @@ def crop_trajectory(info: dict, crop_w: int, crop_h: int, which="primary") -> li
             tx, ty = center, h / 2
         else:
             tx, ty = cx, cy
+
         if sample["cut"] or not points:
             cx, cy = tx, ty
         else:

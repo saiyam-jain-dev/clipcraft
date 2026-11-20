@@ -44,7 +44,10 @@ def generate_karaoke_ass(words: list, clip_start: float, clip_end: float, ass_ou
               "end": min(duration, w["end"] - clip_start)}
              for w in words if w["end"] > clip_start and w["start"] < clip_end and w["end"] > w["start"]]
     groups = _chunks(local)
-    font, size, outline = ("Arial", 68, 5) if style == "bold" else ("Segoe UI", 58, 3) if style == "clean" else ("Arial", 52, 2)
+    font, size, outline = (("Arial", 68, 5) if style == "bold" else
+                           ("Segoe UI", 58, 3) if style == "clean" else
+                           ("Arial", 52, 2) if style == "minimal" else
+                           ("Arial", 82, 7))
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -78,6 +81,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 b = min(duration, next_t, max(word["end"], min(next_t, word["end"] + 0.25)))
                 if style == "minimal":
                     text = " ".join(_escape(w["word"]) for w in group)
+                elif style == "pop":
+                    # Hormozi-style: everything uppercase, the spoken word pops bigger.
+                    parts = []
+                    for j, w in enumerate(group):
+                        t = w["word"].upper()
+                        parts.append((r"{\c" + active_color + r"\fscx118\fscy118}" + t + r"{\r}") if i == j else t)
+                    text = " ".join(parts)
                 else:
                     parts = []
                     for j, w in enumerate(group):

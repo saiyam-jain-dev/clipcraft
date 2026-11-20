@@ -207,3 +207,44 @@ def enqueue(job_id: str, fn, *args):
         if busy:
             update_job(job_id, status_message=f"Waiting in queue (position {len(_pending)})...")
         _queue.put((job_id, fn, args))
+
+
+def generate_compilation_video(job_id: str) -> str:
+    """Concatenates all rendered clips into a single all-in-one vertical compilation video."""
+    import subprocess
+    from .config import FFMPEG_EXE
+    job = get_job(job_id)
+    if not job:
+        raise ValueError("Job not found.")
+    clips = [c for c in job.get("clips", []) if c.get("video_file")]
+    if not clips:
+        raise ValueError("No rendered clips found to compile.")
+    
+    out_file = f"{job_id}_compilation.mp4"
+    out_path = os.path.join(OUTPUTS_DIR, out_file)
+    list_txt = os.path.join(OUTPUTS_DIR, f"{job_id}_concat.txt")
+    
+    clips_sorted = sorted(clips, key=lambda c: float(c.get("start_time", 0)))
+    with open(list_txt, "w", encoding="utf-8") as f:
+        for c in clips_sorted:
+            vpath = os.path.join(OUTPUTS_DIR, c["video_file"])
+            if os.path.exists(vpath):
+                f.write(f"file '{os.path.abspath(vpath).replace(chr(92), '/')}'\n")
+    
+    cmd = [FFMPEG_EXE, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", list_txt, "-c", "copy", out_path]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if os.path.exists(list_txt):
+        try: os.remove(list_txt)
+        except OSError: pass
+
+    if r.returncode != 0 or not os.path.exists(out_path):
+        cmd_fallback = [
+            FFMPEG_EXE, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", list_txt,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-c:a", "aac", "-b:a", "160k", out_path
+        ]
+        subprocess.run(cmd_fallback, capture_output=True, text=True)
+
+    if os.path.exists(out_path):
+        update_job(job_id, compilation_video_url=f"/video/{out_file}")
+        return out_file
+    raise RuntimeError("Failed to generate compilation video.")
