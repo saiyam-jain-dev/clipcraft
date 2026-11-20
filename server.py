@@ -539,7 +539,12 @@ def test_remote_worker_endpoint():
 @app.get("/api/hardware")
 def hardware_endpoint():
     from core.chunk_engine import get_hardware_profile
-    return jsonify(get_hardware_profile())
+    import shutil
+    hw = get_hardware_profile()
+    hw["node_which"] = shutil.which("node")
+    hw["nodejs_which"] = shutil.which("nodejs")
+    hw["path_env"] = os.environ.get("PATH")
+    return jsonify(hw)
 
 
 @app.get("/api/cli-test")
@@ -620,10 +625,34 @@ def test_formats_endpoint():
         "ext": f.get("ext"),
         "res": f.get("resolution")
     } for f in fmts]
+    cookie_names = []
+    if cookiefile and os.path.exists(cookiefile):
+        try:
+            with open(cookiefile, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    parts = line.strip().split("\t")
+                    if len(parts) >= 6:
+                        cookie_names.append(parts[5])
+        except Exception:
+            pass
+
+    anon_names = []
+    if os.path.exists(ANON_COOKIES_PATH):
+        try:
+            with open(ANON_COOKIES_PATH, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    parts = line.strip().split("\t")
+                    if len(parts) >= 6:
+                        anon_names.append(parts[5])
+        except Exception:
+            pass
+
     return jsonify({
         "cookiefile": cookiefile,
         "cookie_exists": cookie_exists,
         "cookie_size": cookie_size,
+        "cookie_names": cookie_names,
+        "anon_names": anon_names,
         "use_cookies": use_cookies,
         "client": client_param or opts.get("extractor_args", {}).get("youtube", {}).get("player_client"),
         "total_formats": len(fmts),
