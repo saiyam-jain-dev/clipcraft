@@ -542,6 +542,45 @@ def hardware_endpoint():
     return jsonify(get_hardware_profile())
 
 
+@app.get("/api/test-formats")
+def test_formats_endpoint():
+    url = request.args.get("url", "https://www.youtube.com/live/VZqAPdUvqnQ")
+    from core.remote_source import fetch_info, _resolve_stream_formats
+    from core.downloader import _ydl_opts
+    opts = _ydl_opts()
+    cookiefile = opts.get("cookiefile")
+    cookie_exists = os.path.exists(cookiefile) if cookiefile else False
+    cookie_size = os.path.getsize(cookiefile) if cookie_exists else 0
+    info = fetch_info(url)
+    fmts = info.get("formats", [])
+    resolved = None
+    res_err = None
+    try:
+        res = _resolve_stream_formats(info)
+        resolved = [{"id": f.get("format_id"), "proto": f.get("protocol"), "vcodec": f.get("vcodec"), "acodec": f.get("acodec")} for f in res]
+    except Exception as e:
+        res_err = str(e)
+    
+    summary = [{
+        "id": f.get("format_id"),
+        "proto": f.get("protocol"),
+        "vcodec": f.get("vcodec"),
+        "acodec": f.get("acodec"),
+        "has_url": bool(f.get("url")),
+        "ext": f.get("ext"),
+        "res": f.get("resolution")
+    } for f in fmts]
+    return jsonify({
+        "cookiefile": cookiefile,
+        "cookie_exists": cookie_exists,
+        "cookie_size": cookie_size,
+        "total_formats": len(fmts),
+        "formats": summary,
+        "resolved": resolved,
+        "res_err": res_err
+    })
+
+
 @app.errorhandler(RequestEntityTooLarge)
 def upload_too_large(e):
     return _error("File is too large. Maximum upload size is 2 GB.", 413)
