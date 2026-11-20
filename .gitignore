@@ -18,6 +18,8 @@ settings.json
 .env.local
 youtube_cookies.*
 *cookies.txt
+*youtube_client_secrets*.json
+*youtube_token*.json
 downloads/
 outputs/
 uploads/
