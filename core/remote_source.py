@@ -301,7 +301,8 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
     cmd = [FFMPEG_EXE, "-y", "-v", "error"]
     for f in fmts:
         headers = dict(f.get("http_headers") or info.get("http_headers") or {})
-        if cookie_hdr and "Cookie" not in headers:
+        # Only inject Cookie header for non-HLS streams (HLS URLs already carry auth tokens in query; 6KB cookies cause 400 Bad Request on manifest servers)
+        if not is_hls and cookie_hdr and "Cookie" not in headers:
             headers["Cookie"] = cookie_hdr
         if headers:
             cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
@@ -326,13 +327,18 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
     # Fallback to NVENC (if GPU available) or ultrafast libx264 CPU transcode
     cmd_transcode = cmd + ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]
     last_err = ""
-    nv_args = ["-c:v", "h264_nvenc"]
-    if gpu_id is not None:
-        nv_args += ["-gpu", str(gpu_id)]
-    nv_args += ["-preset", "p4", "-rc", "vbr", "-cq", "20", "-b:v", "0"]
+    has_gpu = bool(shutil.which("nvidia-smi"))
+    candidates = []
+    if has_gpu:
+        nv_args = ["-c:v", "h264_nvenc"]
+        if gpu_id is not None:
+            nv_args += ["-gpu", str(gpu_id)]
+        nv_args += ["-preset", "p4", "-rc", "vbr", "-cq", "20", "-b:v", "0"]
+        candidates.append(nv_args)
     cpu_args = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-threads", "4"]
+    candidates.append(cpu_args)
 
-    for video_args in (nv_args, cpu_args):
+    for video_args in candidates:
         r = subprocess.run(cmd_transcode + video_args + [out_path], capture_output=True, text=True, timeout=900)
         if r.returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 20000:
             return out_path
@@ -368,10 +374,11 @@ def preview_frame(info: dict, t: float, out_path: str) -> str:
     """One frame at time `t` pulled straight from the stream (HTTP range seek) — no clip download."""
     fmts = _resolve_stream_formats(info)
     vfmt = next((f for f in fmts if f.get("vcodec") not in (None, "none")), fmts[0])
+    is_hls = any(f.get("protocol") in ("m3u8", "m3u8_native") or ".m3u8" in f.get("url", "") for f in fmts)
     cookie_hdr = _get_cookie_header()
     cmd = [FFMPEG_EXE, "-y", "-v", "error", "-ss", f"{max(0.0, t):.3f}"]
     headers = dict(vfmt.get("http_headers") or info.get("http_headers") or {})
-    if cookie_hdr and "Cookie" not in headers:
+    if not is_hls and cookie_hdr and "Cookie" not in headers:
         headers["Cookie"] = cookie_hdr
     if headers:
         cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
