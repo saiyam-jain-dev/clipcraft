@@ -3,9 +3,126 @@ import re
 import glob
 import shutil
 import subprocess
+import tempfile
+import json
+import http.cookiejar
 import cv2
 import yt_dlp
 from .config import DOWNLOADS_DIR, FFMPEG_EXE, NODE_EXE, load_settings
+
+ANON_COOKIES_PATH = "/tmp/youtube_cookies_anon.txt" if os.path.exists("/tmp") else os.path.join(tempfile.gettempdir(), "youtube_cookies_anon.txt")
+
+
+def ensure_netscape_cookies(path: str) -> bool:
+    """Detects if cookie file is in JSON or header-less format, and safely converts it to valid Netscape format in-place.
+    Also extracts visitor/anon cookies to ANON_COOKIES_PATH to bypass account-level SABR streaming experiments."""
+    if not path or not os.path.isfile(path) or os.path.getsize(path) < 10:
+        return False
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read().strip()
+    except Exception:
+        return False
+
+    if not content:
+        return False
+
+    anon_names = {"VISITOR_INFO1_LIVE", "VISITOR_PRIVACY_METADATA", "YSC", "PREF", "GPS"}
+    anon_lines = [
+        "# Netscape HTTP Cookie File",
+        "# http://curl.haxx.se/rfc/cookie_spec.html",
+        "# This is a generated file!  Do not edit.",
+        "",
+    ]
+    has_anon = False
+
+    # Case 1: JSON format (e.g. {"cookies": [...]} or [...])
+    if content.startswith("{") or content.startswith("["):
+        try:
+            data = json.loads(content)
+            cookie_list = []
+            if isinstance(data, dict):
+                cookie_list = data.get("cookies") or data.get("data") or []
+            elif isinstance(data, list):
+                cookie_list = data
+
+            lines = [
+                "# Netscape HTTP Cookie File",
+                "# http://curl.haxx.se/rfc/cookie_spec.html",
+                "# This is a generated file!  Do not edit.",
+                "",
+            ]
+            for c in cookie_list:
+                if not isinstance(c, dict):
+                    continue
+                name = c.get("name")
+                value = c.get("value")
+                if not name or value is None:
+                    continue
+                domain = str(c.get("domain", ".youtube.com"))
+                flag = "TRUE" if domain.startswith(".") else "FALSE"
+                path_val = str(c.get("path", "/"))
+                secure = "TRUE" if c.get("secure") else "FALSE"
+                raw_exp = c.get("expires") or c.get("expirationDate") or 0
+                try:
+                    expires = str(int(float(raw_exp)))
+                except Exception:
+                    expires = "0"
+                row = f"{domain}\t{flag}\t{path_val}\t{secure}\t{expires}\t{name}\t{value}"
+                lines.append(row)
+                if name in anon_names:
+                    anon_lines.append(row)
+                    has_anon = True
+
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+
+            if has_anon:
+                try:
+                    with open(ANON_COOKIES_PATH, "w", encoding="utf-8") as f_anon:
+                        f_anon.write("\n".join(anon_lines) + "\n")
+                except Exception:
+                    pass
+            return True
+        except Exception:
+            pass
+
+    # Case 2: Plain Netscape format or tab-delimited
+    is_netscape = content.startswith("# Netscape HTTP Cookie File") or content.startswith("# HTTP Cookie File")
+    if not is_netscape:
+        # Check if tab-separated rows exist
+        lines = content.splitlines()
+        for line in lines:
+            if line.strip() and "\t" in line:
+                new_content = "# Netscape HTTP Cookie File\n# http://curl.haxx.se/rfc/cookie_spec.html\n\n" + content
+                try:
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(new_content + "\n")
+                    content = new_content
+                    is_netscape = True
+                except Exception:
+                    pass
+                break
+
+    # Extract anon cookies from Netscape lines
+    if is_netscape:
+        for line in content.splitlines():
+            line_str = line.strip()
+            if not line_str or line_str.startswith("#"):
+                continue
+            parts = line_str.split("\t")
+            if len(parts) >= 7 and parts[5] in anon_names:
+                anon_lines.append(line_str)
+                has_anon = True
+        if has_anon:
+            try:
+                with open(ANON_COOKIES_PATH, "w", encoding="utf-8") as f_anon:
+                    f_anon.write("\n".join(anon_lines) + "\n")
+            except Exception:
+                pass
+        return True
+
+    return False
 
 
 def format_duration(seconds: float) -> str:
@@ -35,11 +152,6 @@ def _ydl_opts(**extra) -> dict:
         "noplaylist": True,
         "ignore_no_formats_error": True,
         "ffmpeg_location": ffmpeg_dir(),
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["web_embedded", "tv_samsung", "web", "mweb"]
-            }
-        },
     }
     if NODE_EXE and os.path.exists(NODE_EXE):
         opts["js_runtimes"] = {"node": {"path": NODE_EXE}}
@@ -65,7 +177,7 @@ def _ydl_opts(**extra) -> dict:
                 os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
                 with open(target, "wb") as f:
                     f.write(base64.b64decode(b64_cookies))
-                if os.path.isfile(target) and os.path.getsize(target) >= 100:
+                if ensure_netscape_cookies(target):
                     cookie_file = target
                     break
             except Exception:
@@ -78,12 +190,14 @@ def _ydl_opts(**extra) -> dict:
             os.path.join(os.path.dirname(DOWNLOADS_DIR), "youtube_cookies.txt"),
             os.path.join(DOWNLOADS_DIR, "youtube_cookies.txt"),
         ]:
-            if os.path.isfile(candidate) and os.path.getsize(candidate) >= 100:
-                cookie_file = candidate
-                break
+            if os.path.isfile(candidate) and os.path.getsize(candidate) >= 10:
+                if ensure_netscape_cookies(candidate):
+                    cookie_file = candidate
+                    break
 
-    if cookie_file and os.path.isfile(cookie_file) and os.path.getsize(cookie_file) >= 100:
-        opts["cookiefile"] = cookie_file
+    if cookie_file and os.path.isfile(cookie_file) and os.path.getsize(cookie_file) >= 10:
+        if ensure_netscape_cookies(cookie_file):
+            opts["cookiefile"] = cookie_file
     elif settings.get("cookies_from_browser"):
         opts["cookiesfrombrowser"] = (settings["cookies_from_browser"],)
 
@@ -115,25 +229,42 @@ def _friendly_error(e: Exception) -> str:
 def _extract_with_fallback(opts: dict, url: str, download: bool = False):
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            return ydl.extract_info(url, download=download)
+            info = ydl.extract_info(url, download=download)
+            fmts = (info.get("formats") or []) if info else []
+            # If only storyboard images were returned, account is enrolled in YouTube SABR experiment
+            if fmts and not any(f.get("vcodec") not in (None, "none") and f.get("url") for f in fmts):
+                raise RuntimeError("SABR experiment active for account: only storyboard formats returned")
+            return info
     except Exception as e:
         msg = str(e)
-        # If cookies trigger YouTube SABR experiment ("No video formats found"), retry without cookies
-        if ("No video formats found" in msg or "Requested format is not available" in msg) and (opts.get("cookiefile") or opts.get("cookiesfrombrowser")):
-            fallback_opts = dict(opts)
-            fallback_opts.pop("cookiefile", None)
-            fallback_opts.pop("cookiesfrombrowser", None)
-            fallback_opts.pop("format", None)
+        # 1. Retry with anonymous visitor cookies (bypasses account-level SABR restriction while preserving anti-bot token)
+        if os.path.exists(ANON_COOKIES_PATH) and opts.get("cookiefile") != ANON_COOKIES_PATH:
             try:
-                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                    return ydl.extract_info(url, download=download)
+                anon_opts = dict(opts)
+                anon_opts["cookiefile"] = ANON_COOKIES_PATH
+                anon_opts.pop("format", None)
+                with yt_dlp.YoutubeDL(anon_opts) as ydl:
+                    info = ydl.extract_info(url, download=download)
+                    fmts = (info.get("formats") or []) if info else []
+                    if any(f.get("vcodec") not in (None, "none") and f.get("url") for f in fmts):
+                        return info
             except Exception:
                 pass
-        if "Requested format is not available" in msg and opts.get("format"):
-            fallback_opts = dict(opts)
-            fallback_opts.pop("format", None)
-            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                return ydl.extract_info(url, download=download)
+
+        # 2. Retry without cookies
+        if opts.get("cookiefile") or opts.get("cookiesfrombrowser"):
+            try:
+                fallback_opts = dict(opts)
+                fallback_opts.pop("cookiefile", None)
+                fallback_opts.pop("cookiesfrombrowser", None)
+                fallback_opts.pop("format", None)
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    info = ydl.extract_info(url, download=download)
+                    fmts = (info.get("formats") or []) if info else []
+                    if any(f.get("vcodec") not in (None, "none") and f.get("url") for f in fmts):
+                        return info
+            except Exception:
+                pass
         raise
 
 

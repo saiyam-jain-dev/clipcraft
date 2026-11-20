@@ -13,9 +13,8 @@ from yt_dlp.utils import download_range_func
 from .config import DOWNLOADS_DIR, FFMPEG_EXE
 from .downloader import _ydl_opts, _friendly_error, _extract_with_fallback
 
-# H.264 first (OpenCV face tracking can't reliably decode AV1 on Windows); 30 fps is plenty for Shorts.
-VIDEO_FORMAT = ("bv*[height<=1080][fps<=30][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][fps<=30]+ba/"
-                "bv*[height<=1080]+ba/b[height<=1080]/best/b")
+# H.264 first (OpenCV face tracking can't reliably decode AV1 on Windows); up to 1080p (including 60 fps).
+VIDEO_FORMAT = ("bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/best/b")
 
 
 def fetch_info(source: str, **extra) -> dict:
@@ -194,6 +193,42 @@ def _resolve_stream_formats(info: dict) -> list:
     """Safely extracts valid stream URLs whether info came from process=True or process=False.
     Prefers synchronized combined H.264/HLS streams (like format 301/300/18) that seek reliably."""
     formats = info.get("formats") or []
+    has_playable = any(f.get("vcodec") not in (None, "none") and f.get("url") for f in formats)
+
+    # If info has no playable video streams (e.g. account enrolled in SABR returning only sb0..sb2 storyboards),
+    # re-query with visitor cookies (bypasses SABR) or without cookies.
+    if not has_playable:
+        from .downloader import ANON_COOKIES_PATH, _ydl_opts
+        target_url = info.get("webpage_url") or info.get("original_url") or (f"https://www.youtube.com/watch?v={info.get('id')}" if info.get("id") else None)
+        if target_url:
+            # 1. Try with visitor cookies
+            if os.path.exists(ANON_COOKIES_PATH) and os.path.getsize(ANON_COOKIES_PATH) >= 10:
+                try:
+                    with yt_dlp.YoutubeDL(_ydl_opts(skip_download=True, cookiefile=ANON_COOKIES_PATH)) as ydl:
+                        info_anon = ydl.extract_info(target_url, download=False)
+                        anon_fmts = info_anon.get("formats") or []
+                        if any(f.get("vcodec") not in (None, "none") and f.get("url") for f in anon_fmts):
+                            info = info_anon
+                            formats = anon_fmts
+                            has_playable = True
+                except Exception:
+                    pass
+            # 2. Try without cookies
+            if not has_playable:
+                try:
+                    no_cookie_opts = _ydl_opts(skip_download=True)
+                    no_cookie_opts.pop("cookiefile", None)
+                    no_cookie_opts.pop("cookiesfrombrowser", None)
+                    with yt_dlp.YoutubeDL(no_cookie_opts) as ydl:
+                        info_clean = ydl.extract_info(target_url, download=False)
+                        clean_fmts = info_clean.get("formats") or []
+                        if any(f.get("vcodec") not in (None, "none") and f.get("url") for f in clean_fmts):
+                            info = info_clean
+                            formats = clean_fmts
+                            has_playable = True
+                except Exception:
+                    pass
+
     # 1. Combined audio+video format (e.g. 1080p m3u8 format 301 or progressive 720p format 18/22)
     combined = [f for f in formats if f.get("url") and f.get("vcodec") not in (None, "none") and f.get("acodec") not in (None, "none")]
     if combined:
@@ -225,28 +260,33 @@ def _resolve_stream_formats(info: dict) -> list:
 
 
 def _get_cookie_header() -> str:
-    """Extracts a 'Cookie: name=value; ...' string from the configured yt-dlp cookies file."""
+    """Extracts a 'Cookie: name=value; ...' string from the configured yt-dlp cookies file.
+    Prefers anonymous visitor cookies to avoid SABR 403 blocks on CDN servers."""
+    from .downloader import ANON_COOKIES_PATH, ensure_netscape_cookies, _ydl_opts
     cookie_file = None
-    try:
-        from .downloader import _ydl_opts
-        opts = _ydl_opts()
-        if opts.get("cookiefile") and os.path.isfile(opts["cookiefile"]):
-            cookie_file = opts["cookiefile"]
-    except Exception:
-        pass
-    if not cookie_file:
-        for candidate in [
-            "/tmp/youtube_cookies.txt",
-            "/app/data/youtube_cookies.txt",
-            os.path.join(os.path.dirname(DOWNLOADS_DIR), "youtube_cookies.txt"),
-            os.path.join(DOWNLOADS_DIR, "youtube_cookies.txt"),
-        ]:
-            if os.path.isfile(candidate) and os.path.getsize(candidate) >= 100:
-                cookie_file = candidate
-                break
+    if os.path.exists(ANON_COOKIES_PATH) and os.path.getsize(ANON_COOKIES_PATH) >= 10:
+        cookie_file = ANON_COOKIES_PATH
+    else:
+        try:
+            opts = _ydl_opts()
+            if opts.get("cookiefile") and os.path.isfile(opts["cookiefile"]):
+                cookie_file = opts["cookiefile"]
+        except Exception:
+            pass
+        if not cookie_file:
+            for candidate in [
+                "/tmp/youtube_cookies.txt",
+                "/app/data/youtube_cookies.txt",
+                os.path.join(os.path.dirname(DOWNLOADS_DIR), "youtube_cookies.txt"),
+                os.path.join(DOWNLOADS_DIR, "youtube_cookies.txt"),
+            ]:
+                if os.path.isfile(candidate) and os.path.getsize(candidate) >= 10:
+                    cookie_file = candidate
+                    break
     if not cookie_file:
         return ""
     try:
+        ensure_netscape_cookies(cookie_file)
         cookies = []
         with open(cookie_file, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:

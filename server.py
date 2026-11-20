@@ -536,11 +536,27 @@ def test_remote_worker_endpoint():
     return jsonify(success=True, **res)
 
 
+@app.get("/api/hardware")
+def hardware_endpoint():
+    from core.chunk_engine import get_hardware_profile
+    return jsonify(get_hardware_profile())
+
+
 @app.get("/api/cli-test")
 def cli_test_endpoint():
     url = request.args.get("url", "https://www.youtube.com/live/VZqAPdUvqnQ")
-    client = request.args.get("client", "web_embedded,web,mweb")
-    cmd = ["yt-dlp", "--cookies", "/tmp/youtube_cookies.txt", "--extractor-args", f"youtube:player_client={client}", "-F", "--verbose", url]
+    cookie_mode = request.args.get("cookies", "account")
+    from core.downloader import ANON_COOKIES_PATH, ensure_netscape_cookies
+    cmd = ["yt-dlp", "-F", "--verbose"]
+    if cookie_mode == "anon" and os.path.exists(ANON_COOKIES_PATH):
+        cmd += ["--cookies", ANON_COOKIES_PATH]
+    elif cookie_mode == "account" and os.path.exists("/tmp/youtube_cookies.txt"):
+        ensure_netscape_cookies("/tmp/youtube_cookies.txt")
+        cmd += ["--cookies", "/tmp/youtube_cookies.txt"]
+    client_param = request.args.get("client")
+    if client_param:
+        cmd += ["--extractor-args", f"youtube:player_client={client_param}"]
+    cmd.append(url)
     import subprocess
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     return jsonify({
@@ -559,27 +575,15 @@ def test_formats_endpoint():
     client_param = request.args.get("client")
     
     from core.remote_source import _resolve_stream_formats
-    from core.downloader import _ydl_opts
+    from core.downloader import _ydl_opts, ANON_COOKIES_PATH, _extract_with_fallback
     import yt_dlp
-    import http.cookiejar
 
     opts = _ydl_opts(skip_download=True)
     if not use_cookies:
         opts.pop("cookiefile", None)
         opts.pop("cookiesfrombrowser", None)
-    elif anon_only and opts.get("cookiefile") and os.path.exists(opts["cookiefile"]):
-        try:
-            cj = http.cookiejar.MozillaCookieJar(opts["cookiefile"])
-            cj.load(ignore_discard=True, ignore_expires=True)
-            anon_cj = http.cookiejar.MozillaCookieJar("/tmp/anon_cookies.txt")
-            anon_names = {"VISITOR_INFO1_LIVE", "VISITOR_PRIVACY_METADATA", "YSC", "PREF", "GPS"}
-            for c in cj:
-                if c.name in anon_names:
-                    anon_cj.set_cookie(c)
-            anon_cj.save(ignore_discard=True, ignore_expires=True)
-            opts["cookiefile"] = "/tmp/anon_cookies.txt"
-        except Exception:
-            pass
+    elif anon_only and os.path.exists(ANON_COOKIES_PATH):
+        opts["cookiefile"] = ANON_COOKIES_PATH
 
     if client_param:
         clients = [c.strip() for c in client_param.split(",")]
@@ -591,17 +595,16 @@ def test_formats_endpoint():
     
     fmts = []
     extract_err = None
+    info = {}
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            fmts = info.get("formats", [])
+        info = _extract_with_fallback(opts, url, download=False)
+        fmts = info.get("formats", [])
     except Exception as e:
         extract_err = str(e)
-        info = {}
 
     resolved = None
     res_err = None
-    if fmts:
+    if info:
         try:
             res = _resolve_stream_formats(info)
             resolved = [{"id": f.get("format_id"), "proto": f.get("protocol"), "vcodec": f.get("vcodec"), "acodec": f.get("acodec")} for f in res]
