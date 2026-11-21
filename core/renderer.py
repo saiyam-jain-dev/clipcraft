@@ -126,8 +126,8 @@ def _layout_filter(info, mode, cmd_path):
 
 
 def _encode(cmd, duration, callback):
-    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as errors:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errors, text=True, encoding="utf-8")
+    with tempfile.TemporaryFile(mode="w+b") as errors:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errors, text=True, encoding="utf-8", errors="replace")
         last = 0.0
         for line in proc.stdout:
             if line.startswith("out_time_us="):
@@ -145,7 +145,11 @@ def _encode(cmd, duration, callback):
             proc.wait()
             return -1, "Video rendering timed out after 300s"
         errors.seek(0)
-        return proc.returncode, errors.read()[-2000:]
+        err_bytes = errors.read()
+        err_str = err_bytes.decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0:
+            print(f"[FFMPEG ERROR] returncode={proc.returncode} stderr={err_str[-500:]}", flush=True)
+        return proc.returncode, err_str[-2000:]
 
 
 def render_clip(video_path, clip, words, job_id, options, progress_callback=None, gpu_id: int = None):
@@ -182,9 +186,9 @@ def render_clip(video_path, clip, words, job_id, options, progress_callback=None
         graph += f";[layout]setsar=1,ass='{_escape_path(ass)}',format=yuv420p[v]"
     else:
         graph += ";[layout]setsar=1,format=yuv420p[v]"
-    base = [FFMPEG_EXE, "-y", "-v", "error", "-ss", f"{start:.3f}", "-i", video_path,
-            "-t", f"{duration:.3f}", "-filter_complex_threads", "2", "-filter_complex", graph,
-            "-map", "[v]", "-map", "0:a:0?", "-af", "asetpts=PTS-STARTPTS",
+    base = [FFMPEG_EXE, "-y", "-v", "warning", "-ss", f"{start:.3f}", "-i", video_path,
+            "-t", f"{duration:.3f}", "-filter_complex_threads", "1", "-filter_complex", graph,
+            "-map", "[v]", "-map", "0:a:0?",
             "-r", "30", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"]
     encoder = _video_encoder()
     fast_mode = options.get("mode", "fast") == "fast"
@@ -197,16 +201,27 @@ def render_clip(video_path, clip, words, job_id, options, progress_callback=None
             nv_args += ["-preset", "p1" if fast_mode else "p4", "-rc", "vbr", "-cq", "23", "-b:v", "0"]
             encoding = nv_args
         else:
-            encoding = ["-c:v", "libx264", "-preset", "ultrafast" if fast_mode else "veryfast", "-crf", "23", "-threads", "0"]
+            encoding = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2"]
         code, error = _encode(base + encoding + ["-progress", "pipe:1", "-nostats", output], duration, cb)
         if code == 0:
             break
+        if code != 0 and (enable_sub or enable_brand):
+            # Fallback: Retry without ASS subtitles filter in case fontconfig or ass filter had an error
+            print(f"[RENDER_CLIP] Subtitle/filter execution failed ({error[-200:]}). Retrying clean video...", flush=True)
+            clean_graph = _layout_filter(info, mode, cmd_path) + ";[layout]setsar=1,format=yuv420p[v]"
+            clean_base = [FFMPEG_EXE, "-y", "-v", "warning", "-ss", f"{start:.3f}", "-i", video_path,
+                          "-t", f"{duration:.3f}", "-filter_complex_threads", "1", "-filter_complex", clean_graph,
+                          "-map", "[v]", "-map", "0:a:0?",
+                          "-r", "30", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"]
+            code, error = _encode(clean_base + encoding + ["-progress", "pipe:1", "-nostats", output], duration, cb)
+            if code == 0:
+                break
         if encoder == "h264_nvenc" and attempt == 0:
             encoder = _encoder = "libx264"
         else:
-            raise RuntimeError(f"Video render failed: {error.strip()[-600:]}")
+            raise RuntimeError(f"Video render failed: {error.strip()[-600:] or 'Process terminated'}")
     else:
-        raise RuntimeError(f"Video render failed: {error.strip()[-600:]}")
+        raise RuntimeError(f"Video render failed: {error.strip()[-600:] or 'Process terminated'}")
 
     thumb = os.path.join(OUTPUTS_DIR, prefix + ".jpg")
     subprocess.run([FFMPEG_EXE, "-y", "-v", "error", "-ss", str(min(1, duration / 3)), "-i", output,

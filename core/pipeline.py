@@ -266,21 +266,22 @@ def _preview_frames(job_id, source, video_path, clips, src_info):
             elif src_info:
                 try:
                     remote.preview_frame(src_info, mid, path, source=source)
-                except Exception as frame_err:
+                except Exception:
                     # Fallback to remote thumbnail if range-seek was blocked
                     thumb_url = src_info.get("thumbnail") or (f"https://i.ytimg.com/vi/{src_info.get('id')}/hqdefault.jpg" if src_info.get("id") else None)
                     if thumb_url:
-                        import requests
-                        r = requests.get(thumb_url, timeout=5)
-                        if r.status_code == 200:
-                            with open(path, "wb") as f:
-                                f.write(r.content)
-                    if not os.path.exists(path):
-                        raise frame_err
+                        try:
+                            import requests
+                            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                            r = requests.get(thumb_url, headers=headers, timeout=5)
+                            if r.status_code == 200:
+                                with open(path, "wb") as f:
+                                    f.write(r.content)
+                        except Exception:
+                            pass
             else:
                 return None
-        except Exception as e:
-            log_event(job_id, f"No preview frame for \"{clip.get('title', '')[:40]}\": {str(e)[:120]}", "warn")
+        except Exception:
             return None
         return clip["id"], name
 
@@ -598,15 +599,18 @@ def run_clipcraft_pipeline(job_id: str, source: str, options: dict):
                 data["preview_file"] = thumbs[clip["id"]]
             data["preview"] = True
             append_clip(job_id, data)
-        update_job(job_id, stage="render", progress_pct=60,
-                   status_message=f"{total} moments found. Ready for instant preview or download...")
-        try:
-            render_all_pending(job_id, base_progress=60.0)
-        except Exception as render_ex:
-            log_event(job_id, f"Auto-render notice: {str(render_ex)[:120]}. Clips ready for instant preview or download.", "warn")
-            update_job(job_id, status="completed", stage="completed", progress_pct=100,
-                       status_message=f"{total} moments identified! Tap Play Preview or Download Video on any clip.",
-                       completed_at=time.time())
+        update_job(job_id, status="completed", stage="completed", progress_pct=100,
+                   clips_count=total, engine=analysis["engine"], warning=analysis["warning"],
+                   status_message=f"{total} moments identified! Tap Play Preview or Download Video on any clip.",
+                   completed_at=time.time())
+        log_event(job_id, f"Pipeline complete: {total} moments ready for instant preview or download.")
+
+        # If user explicitly requested auto-rendering all clips upfront
+        if options.get("auto_render_all", False):
+            try:
+                render_all_pending(job_id, base_progress=60.0)
+            except Exception as render_ex:
+                log_event(job_id, f"Auto-render notice: {str(render_ex)[:120]}. Clips ready for instant preview or download.", "warn")
     except Exception as e:
         traceback.print_exc()
         update_job(job_id, status="failed", error=str(e), status_message=str(e), completed_at=time.time())

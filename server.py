@@ -644,6 +644,16 @@ def youtube_exchange_code():
 def youtube_restore_token():
     data = request.get_json(silent=True) or {}
     token_data = data.get("token") or data
+    if isinstance(token_data, str):
+        try:
+            token_data = json.loads(token_data)
+        except Exception:
+            pass
+    if isinstance(token_data, str):
+        try:
+            token_data = json.loads(token_data)
+        except Exception:
+            pass
     if not isinstance(token_data, dict) or not (token_data.get("access_token") or token_data.get("token") or token_data.get("refresh_token")):
         return _error("Valid token data required.")
 

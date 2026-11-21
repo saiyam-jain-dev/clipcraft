@@ -120,11 +120,23 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
           // If popup blocked, fallback to top-level navigation
           window.location.href = res.auth_url;
         } else {
+          // Safety timeout: reset connecting state after 60s if popup was abandoned or unhandled
+          const safetyTimeout = setTimeout(() => {
+            setAuthenticating(false);
+          }, 60000);
+
           const pollTimer = setInterval(() => {
-            if (popup.closed) {
+            try {
+              if (popup.closed) {
+                clearInterval(pollTimer);
+                clearTimeout(safetyTimeout);
+                setAuthenticating(false);
+                checkStatus();
+              }
+            } catch (e) {
               clearInterval(pollTimer);
+              clearTimeout(safetyTimeout);
               setAuthenticating(false);
-              checkStatus();
             }
           }, 800);
         }
@@ -347,14 +359,29 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
                     <Icon name="youtube" />
                     {authenticating ? 'Connecting…' : 'Sign in with Google'}
                   </button>
-                  <button
-                    className="button button-quiet button-small"
-                    type="button"
-                    onClick={() => setShowCodeInput(!showCodeInput)}
-                    title="If popup does not redirect automatically"
-                  >
-                    Paste Code
-                  </button>
+                  {authenticating ? (
+                    <button
+                      className="button button-quiet button-small"
+                      type="button"
+                      onClick={() => setAuthenticating(false)}
+                      title="Reset connecting state"
+                    >
+                      Cancel
+                    </button>
+                  ) : (
+                    <button
+                      className="button button-quiet button-small"
+                      type="button"
+                      onClick={() => setShowCodeInput(!showCodeInput)}
+                      title="If popup does not redirect automatically"
+                    >
+                      Paste Code
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ fontSize: '11px', color: '#8899a6', lineHeight: 1.4, background: '#0e1620', padding: '8px 10px', borderRadius: '6px' }}>
+                  💡 <strong>Google Verification Note:</strong> If Google shows <em>&quot;Access blocked: app has not completed verification (Error 403: access_denied)&quot;</em>, add your Google account email under <strong>Test users</strong> in Google Cloud Console &rarr; APIs &amp; Services &rarr; OAuth consent screen.
                 </div>
 
                 {showCodeInput && (
