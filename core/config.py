@@ -19,7 +19,20 @@ JOBS_DIR = os.path.join(BASE_DIR, "jobs")
 for d in [UPLOADS_DIR, DOWNLOADS_DIR, OUTPUTS_DIR, JOBS_DIR]:
     os.makedirs(d, exist_ok=True)
 
+BIN_DIR = os.path.join(BASE_DIR, "bin")
+os.makedirs(BIN_DIR, exist_ok=True)
+
 FFMPEG_EXE = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
+_bin_ffmpeg = os.path.join(BIN_DIR, "ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+if not os.path.exists(_bin_ffmpeg) and FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
+    try:
+        shutil.copy2(FFMPEG_EXE, _bin_ffmpeg)
+    except Exception:
+        pass
+if BIN_DIR not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = BIN_DIR + os.pathsep + os.environ.get("PATH", "")
+if shutil.which("ffmpeg"):
+    FFMPEG_EXE = shutil.which("ffmpeg")
 DENO_EXE = shutil.which("deno") or "/usr/local/bin/deno"
 NODE_EXE = shutil.which("node") or shutil.which("nodejs") or (r"C:\Program Files\nodejs\node.exe" if os.name == "nt" else "/usr/bin/node")
 YUNET_MODEL_PATH = os.path.join(CORE_DIR, "face_detection_yunet.onnx")

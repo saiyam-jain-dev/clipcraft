@@ -358,7 +358,53 @@ def _has_valid_video(path: str) -> bool:
 
 # ----------------------------------------------------------------------------- per-clip video
 def download_section(source: str, start: float, end: float, out_path: str, info: dict = None, gpu_id: int = None, retries: int = 1) -> str:
-    """Frame-accurate cut of [start, end] straight from the stream URLs (HTTP range seeks, no full download)."""
+    """Frame-accurate cut of [start, end] straight from the stream URLs or yt-dlp native range downloader."""
+    # 1. Local video file: instant seek with ffmpeg
+    if os.path.isfile(source):
+        cmd = [FFMPEG_EXE, "-y", "-v", "error", "-ss", f"{start:.3f}", "-i", source, "-t", f"{end - start:.3f}",
+               "-c:v", "copy", "-c:a", "aac", out_path]
+        subprocess.run(cmd, check=True)
+        return out_path
+
+    # 2. Remote URL: use yt-dlp native range downloader (bypasses YouTube CDN 403 blocks reliably)
+    if source.startswith(("http://", "https://")):
+        target_dir = os.path.dirname(os.path.abspath(out_path))
+        target_stem = os.path.splitext(os.path.basename(out_path))[0]
+        outtmpl = os.path.join(target_dir, f"{target_stem}.%(ext)s")
+        opts = _ydl_opts(
+            format="bv*[height<=720][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=720]+ba/b[height<=720]/best",
+            outtmpl=outtmpl,
+            download_ranges=download_range_func(None, [(max(0.0, start), end)]),
+            force_keyframes_at_cuts=True,
+            merge_output_format="mp4",
+            quiet=True,
+            no_warnings=True,
+        )
+        try:
+            print(f"[YT-DLP RANGE] Downloading {start:.1f}-{end:.1f}s via yt-dlp native range...", flush=True)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                res = ydl.extract_info(source, download=True)
+                filepath = None
+                if res.get("requested_downloads"):
+                    filepath = res["requested_downloads"][0].get("filepath")
+                if not filepath or not os.path.exists(filepath):
+                    candidates = glob.glob(os.path.join(target_dir, f"{target_stem}.*"))
+                    if candidates:
+                        filepath = candidates[0]
+                if filepath and os.path.exists(filepath):
+                    if os.path.abspath(filepath) != os.path.abspath(out_path):
+                        if os.path.exists(out_path):
+                            try:
+                                os.remove(out_path)
+                            except OSError:
+                                pass
+                        shutil.move(filepath, out_path)
+                    if _has_valid_video(out_path):
+                        print(f"[YT-DLP RANGE SUCCESS] {out_path} ({os.path.getsize(out_path)} bytes)", flush=True)
+                        return out_path
+        except Exception as ytdlp_err:
+            print(f"[YT-DLP RANGE NOTICE] yt-dlp native range download attempt failed ({ytdlp_err}). Trying direct transcode fallback...", flush=True)
+
     fmts = []
     if info:
         try:
@@ -477,7 +523,22 @@ def download_lowres_section(source: str, start: float, end: float, out_path: str
 
 
 def preview_frame(info: dict, t: float, out_path: str, source: str = None) -> str:
-    """One frame at time `t` pulled straight from the stream (HTTP range seek) — no clip download."""
+    """One frame at time `t` pulled straight from public thumbnail or stream."""
+    # 1. High-speed, guaranteed public thumbnail
+    vid = info.get("id")
+    thumb_url = info.get("thumbnail") or (f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else None)
+    if thumb_url:
+        try:
+            import requests
+            r = requests.get(thumb_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=4)
+            if r.status_code == 200 and len(r.content) > 1000:
+                with open(out_path, "wb") as f:
+                    f.write(r.content)
+                return out_path
+        except Exception:
+            pass
+
+    # 2. Direct stream seek if thumbnail unavailable
     try:
         fmts = _resolve_stream_formats(info)
         vfmt = next((f for f in fmts if f.get("vcodec") not in (None, "none")), fmts[0])
@@ -511,20 +572,6 @@ def preview_frame(info: dict, t: float, out_path: str, source: str = None) -> st
             return out_path
     except Exception:
         pass
-
-    # Fallback to public video thumbnail
-    vid = info.get("id")
-    thumb_url = info.get("thumbnail") or (f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else None)
-    if thumb_url:
-        try:
-            import requests
-            r = requests.get(thumb_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=5)
-            if r.status_code == 200:
-                with open(out_path, "wb") as f:
-                    f.write(r.content)
-                return out_path
-        except Exception:
-            pass
 
     if os.path.exists(out_path):
         return out_path

@@ -670,8 +670,9 @@ def youtube_restore_token():
     with open(token_file, "w", encoding="utf-8") as f:
         json.dump(token_data, f, indent=2)
 
-    channel = get_channel_profile()
-    return jsonify(success=True, authenticated=channel is not None, channel=channel)
+    youtube = get_youtube_service()
+    channel = get_channel_profile() if youtube else None
+    return jsonify(success=True, authenticated=youtube is not None, channel=channel)
 
 
 @app.post("/api/youtube/disconnect")

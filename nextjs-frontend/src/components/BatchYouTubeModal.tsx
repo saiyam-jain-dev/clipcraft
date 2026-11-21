@@ -231,10 +231,10 @@ export default function BatchYouTubeModal({
               margin: '16px 0',
             }}
           >
-            <strong style={{ fontSize: '15px' }}>No Rendered Clips Available Yet</strong>
+            <strong style={{ fontSize: '15px' }}>No Downloaded Clips Available Yet</strong>
             <p style={{ margin: '6px 0 0', fontSize: '13px', color: 'var(--muted)' }}>
-              Clips must be rendered into vertical 9:16 format with captions before uploading to YouTube Shorts.
-              Click &ldquo;Render 9:16&rdquo; on any moment card first!
+              Clips must be prepared into vertical 9:16 format with captions before uploading to YouTube Shorts.
+              Click &ldquo;Download Video&rdquo; on any moment card first!
             </p>
           </div>
         ) : (

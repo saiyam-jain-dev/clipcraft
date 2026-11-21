@@ -120,7 +120,7 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
       await apiClient.renderClip(jobId, clipId);
       await loadJob();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to render clip');
+      setError(err instanceof Error ? err.message : 'Failed to prepare clip download');
     } finally {
       setRenderingClips(prev => ({ ...prev, [clipId]: false }));
     }
@@ -132,7 +132,7 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
       await apiClient.renderAllClips(jobId);
       await loadJob();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to render all clips');
+      setError(err instanceof Error ? err.message : 'Failed to download all clips');
       setLoading(false);
     }
   };
@@ -156,7 +156,7 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
       setEditingClip(null);
       await loadJob();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to re-edit clip');
+      setError(err instanceof Error ? err.message : 'Failed to re-download clip');
     } finally {
       setRenderingClips(prev => ({ ...prev, [clipId]: false }));
     }
@@ -558,15 +558,29 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
                         src={videoUrl}
                         aria-label={`Preview of ${clip.title}`}
                       />
-                    ) : isInlinePlaying && clipYtVideoId ? (
+                    ) : isInlinePlaying ? (
                       <div className="clip-inline-player">
-                        <iframe
-                          className="clip-inline-iframe"
-                          src={`https://www.youtube-nocookie.com/embed/${clipYtVideoId}?start=${Math.floor(clip.start_time)}&end=${Math.ceil(clip.end_time)}&autoplay=1&rel=0&modestbranding=1`}
-                          title={`Preview of ${clip.title}`}
-                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                          allowFullScreen
-                        />
+                        {clipYtVideoId ? (
+                          <iframe
+                            className="clip-inline-iframe"
+                            src={`https://www.youtube-nocookie.com/embed/${clipYtVideoId}?start=${Math.floor(clip.start_time)}&end=${Math.ceil(clip.end_time)}&autoplay=1&rel=0&modestbranding=1`}
+                            title={`Preview of ${clip.title}`}
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                            allowFullScreen
+                          />
+                        ) : job?.source && job.source.startsWith('http') ? (
+                          <video
+                            className="clip-video"
+                            controls
+                            autoPlay
+                            playsInline
+                            src={`${job.source}#t=${Math.floor(clip.start_time)},${Math.ceil(clip.end_time)}`}
+                          />
+                        ) : (
+                          <div className="clip-preview-placeholder">
+                            <span>Preview unavailable</span>
+                          </div>
+                        )}
                         <button
                           type="button"
                           className="clip-inline-close-btn"
@@ -600,7 +614,11 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
                                 className="clip-play-hero-btn"
                                 type="button"
                                 onClick={() => {
-                                  if (clipYtVideoId || (typeof window !== 'undefined' && window.innerWidth <= 768)) {
+                                  const isMobile = typeof window !== 'undefined' && (
+                                    window.innerWidth <= 768 ||
+                                    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+                                  );
+                                  if (isMobile || clipYtVideoId) {
                                     setInlinePreviewClipId(inlinePreviewClipId === clip.clip_id ? null : clip.clip_id);
                                   } else {
                                     setPreviewModalClip(clip);
@@ -769,7 +787,11 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
                             className="button button-small button-preview"
                             type="button"
                             onClick={() => {
-                              if (clipYtVideoId || (typeof window !== 'undefined' && window.innerWidth <= 768)) {
+                              const isMobile = typeof window !== 'undefined' && (
+                                window.innerWidth <= 768 ||
+                                /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+                              );
+                              if (isMobile || clipYtVideoId) {
                                 setInlinePreviewClipId(inlinePreviewClipId === clip.clip_id ? null : clip.clip_id);
                               } else {
                                 setPreviewModalClip(clip);
@@ -778,7 +800,7 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
                             title="Instant preview without downloading"
                           >
                             <Icon name="play" />
-                            Preview
+                            {inlinePreviewClipId === clip.clip_id ? 'Stop' : 'Preview'}
                           </button>
                           <button
                             className="button button-primary button-small"
@@ -788,7 +810,7 @@ export default function JobView({ jobId, onBack, onNewProject }: JobViewProps) {
                             title="Download 9:16 vertical short"
                           >
                             <Icon name="download" />
-                            {isRendering ? 'Preparing…' : 'Download Video'}
+                            {isRendering ? 'Preparing download…' : 'Download Video'}
                           </button>
                         </>
                       )}

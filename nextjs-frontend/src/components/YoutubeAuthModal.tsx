@@ -15,6 +15,7 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
   const [channel, setChannel] = useState<{
     id?: string;
     title?: string;
+    description?: string;
     custom_url?: string;
     thumbnail?: string;
     subscriber_count?: string;
@@ -47,7 +48,8 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
         try {
           const savedToken = localStorage.getItem('clipcraft_youtube_token');
           if (savedToken) {
-            const restored = await apiClient.youtubeRestoreToken(JSON.parse(savedToken));
+            const tokenObj = typeof savedToken === 'string' && savedToken.startsWith('{') ? JSON.parse(savedToken) : savedToken;
+            const restored = await apiClient.youtubeRestoreToken(tokenObj);
             if (restored.authenticated) {
               res = await apiClient.youtubeAuthStatus();
             }
@@ -55,9 +57,18 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
         } catch (e) {}
       }
 
-      setAuthenticated(Boolean(res.authenticated));
+      const isAuthed = Boolean(res.authenticated);
+      setAuthenticated(isAuthed);
       setConfigured(Boolean(res.configured));
-      setChannel(res.channel || null);
+      if (res.channel) {
+        setChannel(res.channel);
+      } else if (isAuthed) {
+        setChannel({
+          id: 'connected',
+          title: 'YouTube Account Connected',
+          description: 'Ready to publish YouTube Shorts',
+        });
+      }
       if (!res.configured) {
         setShowCredForm(true);
       }
@@ -84,7 +95,7 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
         }
         if (event.data?.token) {
           try {
-            localStorage.setItem('clipcraft_youtube_token', JSON.stringify(event.data.token));
+            localStorage.setItem('clipcraft_youtube_token', typeof event.data.token === 'string' ? event.data.token : JSON.stringify(event.data.token));
           } catch (e) {}
         }
         await checkStatus();
@@ -96,6 +107,26 @@ export default function YoutubeAuthModal({ isOpen, onClose }: YoutubeAuthModalPr
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, [isOpen]);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      if (authenticating) {
+        setTimeout(() => {
+          setAuthenticating(false);
+          checkStatus();
+        }, 1200);
+      }
+    };
+    window.addEventListener('focus', handleFocus);
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') handleFocus();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [authenticating]);
 
   const handleStartOAuth = async () => {
     setAuthenticating(true);
