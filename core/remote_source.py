@@ -357,7 +357,7 @@ def _has_valid_video(path: str) -> bool:
 
 
 # ----------------------------------------------------------------------------- per-clip video
-def download_section(source: str, start: float, end: float, out_path: str, info: dict = None, gpu_id: int = None) -> str:
+def download_section(source: str, start: float, end: float, out_path: str, info: dict = None, gpu_id: int = None, retries: int = 1) -> str:
     """Frame-accurate cut of [start, end] straight from the stream URLs (HTTP range seeks, no full download)."""
     fmts = []
     if info:
@@ -373,8 +373,9 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
             info = fetch_info(source, format="best/b")
             fmts = _resolve_stream_formats(info)
     is_hls = any(f.get("protocol") in ("m3u8", "m3u8_native") or ".m3u8" in f.get("url", "") for f in fmts)
+    is_google = any("googlevideo.com" in f.get("url", "") for f in fmts)
     cookie_hdr = _get_cookie_header()
-    print(f"[DOWNLOAD_SECTION START] is_hls={is_hls} fmts_len={len(fmts)} formats={[(f.get('format_id'), f.get('protocol'), f.get('vcodec'), f.get('acodec'), f.get('url')[:60] if f.get('url') else None) for f in fmts]}", flush=True)
+    print(f"[DOWNLOAD_SECTION START] is_hls={is_hls} is_google={is_google} fmts_len={len(fmts)} formats={[(f.get('format_id'), f.get('protocol'), f.get('vcodec'), f.get('acodec'), f.get('url')[:60] if f.get('url') else None) for f in fmts]}", flush=True)
 
     cmd = [
         FFMPEG_EXE, "-y", "-v", "warning",
@@ -386,8 +387,8 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
     ]
     for f in fmts:
         headers = dict(f.get("http_headers") or info.get("http_headers") or {})
-        # Only inject Cookie header for non-HLS streams (HLS URLs already carry auth tokens in query; 6KB cookies cause 400 Bad Request on manifest servers)
-        if not is_hls and cookie_hdr and "Cookie" not in headers:
+        # Do not inject session cookie into googlevideo or HLS URLs (causes 403 / 400 Bad Request on CDN)
+        if not is_google and not is_hls and cookie_hdr and "Cookie" not in headers:
             headers["Cookie"] = cookie_hdr
         ua = headers.pop("User-Agent", None) or headers.pop("user-agent", None) or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         cmd += ["-user_agent", ua]
@@ -445,13 +446,13 @@ def download_section(source: str, start: float, end: float, out_path: str, info:
             except OSError:
                 pass
 
-    if any(tok in last_err.lower() for tok in ("403", "forbidden", "segment", "playlist")):
-        print(f"[DOWNLOAD_SECTION] Encountered stream error ({last_err[-200:]}). Refreshing format tokens...", flush=True)
+    if retries > 0 and any(tok in last_err.lower() for tok in ("403", "forbidden", "segment", "playlist")):
+        print(f"[DOWNLOAD_SECTION] Encountered stream error ({last_err[-200:]}). Refreshing format tokens (1 retry remaining)...", flush=True)
         try:
             fresh_info = fetch_info(source, format=VIDEO_FORMAT)
             fresh_fmts = _resolve_stream_formats(fresh_info)
-            if fresh_fmts and [f.get("url") for f in fresh_fmts] != [f.get("url") for f in fmts]:
-                return download_section(source, start, end, out_path, info=fresh_info, gpu_id=gpu_id)
+            if fresh_fmts:
+                return download_section(source, start, end, out_path, info=fresh_info, gpu_id=gpu_id, retries=retries - 1)
         except Exception as retry_ex:
             print(f"[DOWNLOAD_SECTION REFRESH FAILED] {retry_ex}", flush=True)
 

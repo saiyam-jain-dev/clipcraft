@@ -182,7 +182,7 @@ def _worker():
     while True:
         job_id, fn, args = _queue.get()
         with _lock:
-            if job_id in _pending:
+            while job_id in _pending:
                 _pending.remove(job_id)
             for pos, jid in enumerate(_pending, start=1):
                 update_job(jid, status_message=f"Waiting in queue (position {pos})...")
@@ -192,17 +192,21 @@ def _worker():
             traceback.print_exc()
             update_job(job_id, status="failed", error=str(e), status_message=f"Processing error: {e}")
         finally:
+            with _lock:
+                while job_id in _pending:
+                    _pending.remove(job_id)
             _queue.task_done()
 
 
 def enqueue(job_id: str, fn, *args):
-    """One job at a time: Whisper + rendering would thrash a single GPU if run in parallel."""
+    """Worker pool: concurrent job execution so new pipelines are never blocked by rendering."""
     global _worker_started
     with _lock:
         if not _worker_started:
-            threading.Thread(target=_worker, daemon=True).start()
+            for _ in range(2):
+                threading.Thread(target=_worker, daemon=True).start()
             _worker_started = True
-        busy = _queue.unfinished_tasks > 0
+        busy = _queue.unfinished_tasks >= 2
         _pending.append(job_id)
         if busy:
             update_job(job_id, status_message=f"Waiting in queue (position {len(_pending)})...")
